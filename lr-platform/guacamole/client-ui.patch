@@ -1,0 +1,162 @@
+diff --git a/guacamole/src/main/frontend/src/app/client/controllers/clientController.js b/guacamole/src/main/frontend/src/app/client/controllers/clientController.js
+index 6a486fe..b0e8a17 100644
+--- a/guacamole/src/main/frontend/src/app/client/controllers/clientController.js
++++ b/guacamole/src/main/frontend/src/app/client/controllers/clientController.js
+@@ -144,6 +144,23 @@ angular.module('client').controller('clientController', ['$scope', '$routeParams
+         $scope.menu.shown = false;
+     };
+ 
++    /**
++     * Sends Ctrl+Shift+P directly to the remote system. This provides a
++     * reliable printing action when the local browser consumes that shortcut.
++     */
++    $scope.sendLrPrintShortcut = function sendLrPrintShortcut() {
++        const CTRL_KEY = 0xFFE3;
++        const SHIFT_KEY = 0xFFE1;
++        const P_KEY = 0x0070;
++
++        $scope.$broadcast('guacSyntheticKeydown', CTRL_KEY);
++        $scope.$broadcast('guacSyntheticKeydown', SHIFT_KEY);
++        $scope.$broadcast('guacSyntheticKeydown', P_KEY);
++        $scope.$broadcast('guacSyntheticKeyup', P_KEY);
++        $scope.$broadcast('guacSyntheticKeyup', SHIFT_KEY);
++        $scope.$broadcast('guacSyntheticKeyup', CTRL_KEY);
++    };
++
+     /**
+      * Applies any changes to connection parameters made by the user within the
+      * Guacamole menu to the given ManagedClient. If no client is supplied,
+diff --git a/guacamole/src/main/frontend/src/app/client/directives/guacClientNotification.js b/guacamole/src/main/frontend/src/app/client/directives/guacClientNotification.js
+index 03344b6..4259a69 100644
+--- a/guacamole/src/main/frontend/src/app/client/directives/guacClientNotification.js
++++ b/guacamole/src/main/frontend/src/app/client/directives/guacClientNotification.js
+@@ -278,7 +278,7 @@ angular.module('client').directive('guacClientNotification', [function guacClien
+                     text    : {
+                         key : "CLIENT.TEXT_CLIENT_STATUS_" + connectionState.toUpperCase()
+                     },
+-                    actions : actions
++                    
+                 });
+             }
+ 
+diff --git a/guacamole/src/main/frontend/src/app/client/styles/client.css b/guacamole/src/main/frontend/src/app/client/styles/client.css
+index 4d45298..461817c 100644
+--- a/guacamole/src/main/frontend/src/app/client/styles/client.css
++++ b/guacamole/src/main/frontend/src/app/client/styles/client.css
+@@ -134,4 +134,30 @@ body.client {
+ 
+ .client .drop-pending .display > *{
+     opacity: 0.5;
+-}
+\ No newline at end of file
++}
++#lr-print-button {
++    position: fixed;
++    right: 1em;
++    bottom: 1em;
++    z-index: 30;
++    min-width: 7em;
++    padding: 0.65em 1em;
++    border: 1px solid rgba(255, 255, 255, 0.35);
++    border-radius: 0.4em;
++    background: #176b3a;
++    color: white;
++    box-shadow: 0 0.25em 0.8em rgba(0, 0, 0, 0.35);
++    cursor: pointer;
++    font-weight: bold;
++}
++
++#lr-print-button:hover,
++#lr-print-button:focus {
++    background: #218c4d;
++    outline: 2px solid white;
++    outline-offset: 2px;
++}
++
++#lr-print-button:active {
++    transform: translateY(1px);
++}
+diff --git a/guacamole/src/main/frontend/src/app/client/templates/client.html b/guacamole/src/main/frontend/src/app/client/templates/client.html
+index 66dca3a..8124bbb 100644
+--- a/guacamole/src/main/frontend/src/app/client/templates/client.html
++++ b/guacamole/src/main/frontend/src/app/client/templates/client.html
+@@ -44,6 +44,14 @@
+     <div id="connection-warning" ng-show="isConnectionUnstable()">
+         {{'CLIENT.TEXT_CLIENT_STATUS_UNSTABLE' | translate}}
+     </div>
++
++    <!-- Reliable fallback when the browser consumes Ctrl+Shift+P locally -->
++    <button id="lr-print-button"
++            type="button"
++            ng-click="sendLrPrintShortcut()"
++            ng-attr-title="{{'CLIENT.HELP_LR_PRINT' | translate}}">
++        {{'CLIENT.ACTION_LR_PRINT' | translate}}
++    </button>
+     
+     <!-- Menu -->
+     <div class="menu" ng-class="{open: menu.shown}" id="guac-menu">
+diff --git a/guacamole/src/main/frontend/src/app/rest/services/tunnelService.js b/guacamole/src/main/frontend/src/app/rest/services/tunnelService.js
+index 2ebb08b..ee13edf 100644
+--- a/guacamole/src/main/frontend/src/app/rest/services/tunnelService.js
++++ b/guacamole/src/main/frontend/src/app/rest/services/tunnelService.js
+@@ -217,6 +217,28 @@ angular.module('rest').factory('tunnelService', ['$injector',
+                 + '/' + encodeURIComponent(sanitizeFilename(filename))
+                 + '?token=' + encodeURIComponent(authenticationService.getCurrentToken());
+ 
++        // Virtual-printer output is handled locally with explicit user choice.
++        // Browsers still require a user gesture before opening their print UI.
++        if (mimetype === 'application/pdf' && $window.fetch) {
++            stream.onblob = function acknowledgePdfData() {
++                stream.sendAck('OK', Guacamole.Status.Code.SUCCESS);
++            };
++            stream.onend = angular.noop;
++            $window.fetch(url, {credentials: 'same-origin'})
++                .then(function checkPdfResponse(response) {
++                    if (!response.ok)
++                        throw new Error('Remote PDF download failed');
++                    return response.blob();
++                })
++                .then(function pdfReceived(blob) {
++                    showLrPdfDialog(blob, sanitizeFilename(filename || 'remote-print.pdf'));
++                })
++                .catch(function pdfDownloadFailed() {
++                    // Preserve a visible failure instead of silently losing a job.
++                    $window.alert('The remote PDF could not be received. Please print again.');
++                });
++            return;
++        }
+         // Create temporary hidden iframe to facilitate download
+         var iframe = document.createElement('iframe');
+         iframe.style.position = 'fixed';
+diff --git a/guacamole/src/main/frontend/src/translations/en.json b/guacamole/src/main/frontend/src/translations/en.json
+index 05c52fa..13ef981 100644
+--- a/guacamole/src/main/frontend/src/translations/en.json
++++ b/guacamole/src/main/frontend/src/translations/en.json
+@@ -71,6 +71,7 @@
+         "ACTION_DISCONNECT"                : "Disconnect",
+         "ACTION_FULLSCREEN"                : "Fullscreen",
+         "ACTION_LOGOUT"                    : "@:APP.ACTION_LOGOUT",
++        "ACTION_LR_PRINT"                  : "LR Print",
+         "ACTION_NAVIGATE_BACK"             : "@:APP.ACTION_NAVIGATE_BACK",
+         "ACTION_NAVIGATE_HOME"             : "@:APP.ACTION_NAVIGATE_HOME",
+         "ACTION_RECONNECT"                 : "Reconnect",
+@@ -128,6 +129,7 @@
+         "HELP_INPUT_METHOD_NONE"   : "No input method is used. Keyboard input is accepted from a connected, physical keyboard.",
+         "HELP_INPUT_METHOD_OSK"    : "Display and accept input from the built-in Guacamole on-screen keyboard. The on-screen keyboard allows typing of key combinations that may otherwise be impossible (such as Ctrl-Alt-Del).",
+         "HELP_INPUT_METHOD_TEXT"   : "Allow typing of text, and emulate keyboard events based on the typed text. This is necessary for devices such as mobile phones that lack a physical keyboard.",
++        "HELP_LR_PRINT"            : "Send Ctrl+Shift+P to the remote session and open its print command.",
+         "HELP_MOUSE_MODE"          : "Determines how the remote mouse behaves with respect to touches.",
+         "HELP_MOUSE_MODE_ABSOLUTE" : "Tap to click. The click occurs at the location of the touch.",
+         "HELP_MOUSE_MODE_RELATIVE" : "Drag to move the mouse pointer and tap to click. The click occurs at the location of the pointer.",
+@@ -162,9 +164,9 @@
+         "TEXT_ZOOM_AUTO_FIT"              : "Automatically fit to browser window",
+         "TEXT_CLIENT_STATUS_IDLE"         : "Idle.",
+         "TEXT_CLIENT_STATUS_CONNECTING"   : "Connecting to Guacamole...",
+-        "TEXT_CLIENT_STATUS_DISCONNECTED" : "You have been disconnected.",
++        "TEXT_CLIENT_STATUS_DISCONNECTED" : "Your LR Remote Access session has ended.",
+         "TEXT_CLIENT_STATUS_UNSTABLE"     : "The network connection to the Guacamole server appears unstable.",
+-        "TEXT_CLIENT_STATUS_WAITING"      : "Connected to Guacamole. Waiting for response...",
++        "TEXT_CLIENT_STATUS_WAITING"      : "We're securing your connection to ensure a safe browsing experience. Please wait a moment....",
+         "TEXT_USER_JOINED"                : "{USERNAME} has joined the connection.",
+         "TEXT_USER_LEFT"                  : "{USERNAME} has left the connection.",
+         "TEXT_RECONNECT_COUNTDOWN"        : "Reconnecting in {REMAINING} {REMAINING, plural, one{second} other{seconds}}...",

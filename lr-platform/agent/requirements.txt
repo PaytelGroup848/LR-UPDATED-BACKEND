@@ -1,0 +1,9 @@
+PyQt5==5.15.10
+requests==2.31.0
+pyinstaller==6.21.0
+psutil==6.0.0
+python-socketio==5.11.3
+opencv-python
+mss
+numpy
+PyAutoGUI

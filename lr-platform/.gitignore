@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environment
+venv/
+
+# Environment
+.env
+
+# IDE
+.vscode/
+
+# Database
+*.db
+backups/
+data/print_jobs/
+instance/portal_customization_assets/
+
+# Logs
+logs/
+*.log
+
+# Frontend build output
+frontend/node_modules/
+frontend/.next/
+frontend/.next-dev/
+frontend/.env.local
+
+# Desktop client build output
+desktop-client/build/
+desktop-client/dist/
+desktop-client/build_version.py
+admin-panel/build_version.py
+backend/static/client/*.exe
+backend/static/admin/*.exe
+backend/static/updater/*.exe
+backend/static/app-updates/*.json
+installer/build/output/
+installer/build/specs/
+installer/build/work/
+
+# Alembic
+alembic.ini
+
+
+echo "lr-platform/admin-panel/dist/" >> .gitignore
