@@ -1,4 +1,6 @@
 customtkinter==5.2.2
 pillow>=10.0.0
 pywin32==312
+types-pywin32
 pyinstaller==6.21.0
+

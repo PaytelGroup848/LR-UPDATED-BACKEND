@@ -237,22 +237,41 @@ class AssignTab(ttk.Frame):
     def refresh(self):
         if not self.app.require_login():
             return
-        try:
-            self.users = self.app.client.users()
-            self.apps = self.app.client.apps()
-            labels = [self._user_label(user) for user in self.users]
-            self.user_combo['values'] = labels
-            if labels:
-                if self.user_var.get() not in labels:
-                    self.user_var.set(labels[0])
-                    self.assigned_ids.clear()
-                self.load_for_user()
-            else:
-                self.user_var.set('')
-                self.assigned_ids.clear()
-                self._fill()
-        except ApiError as error:
+        if getattr(self, "_is_loading", False):
+            return
+        self._is_loading = True
+
+        import threading
+
+        def worker():
+            try:
+                users = self.app.client.users()
+                apps = self.app.client.apps()
+                self.after(0, lambda: self._on_refreshed(users, apps, None))
+            except Exception as error:
+                self.after(0, lambda: self._on_refreshed(None, None, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_refreshed(self, users, apps, error):
+        self._is_loading = False
+        if error:
             messagebox.showerror('Assignments', str(error))
+            self.app.set_status(f'Assignments load error: {error}')
+            return
+        self.users = users if isinstance(users, list) else []
+        self.apps = apps if isinstance(apps, list) else []
+        labels = [self._user_label(user) for user in self.users]
+        self.user_combo['values'] = labels
+        if labels:
+            if self.user_var.get() not in labels:
+                self.user_var.set(labels[0])
+                self.assigned_ids.clear()
+            self.load_for_user()
+        else:
+            self.user_var.set('')
+            self.assigned_ids.clear()
+            self._fill()
 
     def update_sources(self, users=None, apps=None):
         if users is not None:
@@ -270,13 +289,26 @@ class AssignTab(ttk.Frame):
         user = self.selected_user()
         if not user:
             return
-        try:
-            data = self.app.client.assignments_for_user(user['id'])
-            self.assigned_ids = self._assigned_id_set(data)
-            self.apps = data.get('available_apps', self.apps)
-            self._fill()
-        except ApiError as error:
+        user_id = user['id']
+
+        import threading
+
+        def worker():
+            try:
+                data = self.app.client.assignments_for_user(user_id)
+                self.after(0, lambda: self._on_user_loaded(data, None))
+            except Exception as error:
+                self.after(0, lambda: self._on_user_loaded(None, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_user_loaded(self, data, error):
+        if error:
             messagebox.showerror('Assignments', str(error))
+            return
+        self.assigned_ids = self._assigned_id_set(data)
+        self.apps = (data if isinstance(data, dict) else {}).get('available_apps', self.apps)
+        self._fill()
 
     def assign_selected(self):
         user = self.selected_user()
@@ -309,7 +341,7 @@ class AssignTab(ttk.Frame):
 
     def selected_user(self):
         label = self.user_var.get()
-        user_id = str(label).split(' - ', 1)[0]
+        user_id = label.split(' - ', 1)[0]
         return next((user for user in self.users if str(user.get('id')) == user_id), None)
 
     def _selected_id(self, tree):

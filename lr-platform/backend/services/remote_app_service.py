@@ -1,16 +1,24 @@
+import base64
+import gzip
 import ipaddress
 import platform
 import re
 import socket
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import PureWindowsPath
+from typing import Any
 
 from backend.extensions import db, socketio
 from backend.core.config import settings
 from backend.models.application import PublishedApp
 from backend.models.server import Server
 from backend.services.agent_command_service import AgentCommandService
-from shared.windows.remote_app import run_remote_app_action
+from shared.windows.remote_app import _REMOTE_APP_SCRIPT, run_remote_app_action
+
+
+def _compressed_remote_app_script():
+    comp = gzip.compress(_REMOTE_APP_SCRIPT.encode("utf-8"), mtime=0)
+    return "GZIP:" + base64.b64encode(comp).decode("ascii")
 
 
 def _clean_text(value):
@@ -213,6 +221,7 @@ class RemoteAppService:
                 or (server or {}).get("rds_collection_name")
             ),
             "connection_broker": connection_broker,
+            "script_override": _compressed_remote_app_script(),
         }
         return {
             "tenant_id": (app or {}).get("tenant_id"),
@@ -302,6 +311,12 @@ class RemoteAppService:
         return host in local_addresses
 
     @classmethod
+    def _normalize_result(cls, result):
+        if not isinstance(result, dict):
+            return result
+        return result
+
+    @classmethod
     def _dispatch(cls, spec, agent_sid=None):
         if not spec.get("server"):
             return {
@@ -330,14 +345,16 @@ class RemoteAppService:
             )
             if isinstance(result, dict):
                 result.setdefault("transport", "agent_command")
+                result = cls._normalize_result(result)
                 if result.get("success"):
                     return result
             if settings.ALLOW_LEGACY_LOCAL_HOST_OPERATIONS and cls._server_is_local(spec.get("server")):
                 local_result = run_remote_app_action(spec.get("payload") or {})
                 if isinstance(local_result, dict):
                     local_result.setdefault("transport", "local")
+                    local_result = cls._normalize_result(local_result)
                     return local_result
-            return result if isinstance(result, dict) else {
+            return cls._normalize_result(result) if isinstance(result, dict) else {
                 "success": False,
                 "status": "failed",
                 "message": "Windows Agent returned an invalid RemoteApp response.",
@@ -351,7 +368,7 @@ class RemoteAppService:
                 result = run_remote_app_action(spec.get("payload") or {})
                 if isinstance(result, dict):
                     result.setdefault("transport", "local")
-                    return result
+                    return cls._normalize_result(result)
             if not agent_sid:
                 return {
                     "success": False,
@@ -381,22 +398,20 @@ class RemoteAppService:
                 "message": "Windows Agent returned an invalid RemoteApp response.",
             }
         result.setdefault("transport", "agent")
-        return result
+        return cls._normalize_result(result)
 
     @staticmethod
     def _job_filter(spec):
         return {
             "tenant_id": spec.get("tenant_id"),
+            "server_id": spec.get("server_id"),
             "app_id": spec.get("app_id"),
             "action": spec.get("action"),
-            "server_id": spec.get("server_id"),
-            "alias": spec.get("alias"),
-            "collection_name": spec.get("collection_name"),
         }
 
     @classmethod
     def _queue_job(cls, spec, result):
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         job = {
             **cls._job_filter(spec),
             "agent_id": spec.get("agent_id"),
@@ -426,9 +441,11 @@ class RemoteAppService:
     def _record_result(cls, app, action, result, update_config=True):
         if not app or not app.get("_id"):
             return
-        now = datetime.utcnow()
+        if isinstance(result, dict):
+            result = cls._normalize_result(result)
+        now = datetime.now(timezone.utc)
         status = _clean_text(result.get("status")) or ("published" if result.get("success") else "failed")
-        updates = {
+        updates: dict[str, Any] = {
             "remote_app_publish_status": status,
             "remote_app_publish_message": _clean_text(result.get("message")),
             "remote_app_last_sync_at": now,
@@ -479,6 +496,8 @@ class RemoteAppService:
         if action == "publish":
             cls.discard_publish_jobs(spec.get("app_id"))
         result = cls._dispatch(spec)
+        if isinstance(result, dict):
+            result = cls._normalize_result(result)
         if result.get("success"):
             cls._clear_job(spec)
         else:
@@ -489,17 +508,19 @@ class RemoteAppService:
 
     @classmethod
     def publish_app(cls, app):
-        return cls._sync(app, "publish")
+        result = cls._sync(app, "publish")
+        return cls._normalize_result(result) if isinstance(result, dict) else result
 
     @classmethod
     def unpublish_app(cls, app, record_result=True, update_config=True):
         cls.discard_publish_jobs((app or {}).get("_id") or (app or {}).get("id"))
-        return cls._sync(
+        result = cls._sync(
             app,
             "remove",
             record_result=record_result,
             update_config=update_config,
         )
+        return cls._normalize_result(result) if isinstance(result, dict) else result
 
     @classmethod
     def record_status(cls, app, action, result):
@@ -510,8 +531,10 @@ class RemoteAppService:
         if not isinstance(app, dict):
             app = PublishedApp.get_by_id(app)
         if (app or {}).get("is_active") is False:
-            return cls.mark_inactive(app)
-        return cls.publish_app(app)
+            result = cls.mark_inactive(app)
+        else:
+            result = cls.publish_app(app)
+        return cls._normalize_result(result) if isinstance(result, dict) else result
 
     @classmethod
     def mark_inactive(cls, app):
@@ -533,9 +556,12 @@ class RemoteAppService:
         if (app or {}).get("is_active") is False:
             status = _clean_text((app or {}).get("remote_app_publish_status")).lower()
             if status in {"pending", "failed", "published"}:
-                return cls.unpublish_app(app)
-            return cls.mark_inactive(app)
-        return cls.sync_app(app)
+                result = cls.unpublish_app(app)
+            else:
+                result = cls.mark_inactive(app)
+        else:
+            result = cls.sync_app(app)
+        return cls._normalize_result(result) if isinstance(result, dict) else result
 
     @classmethod
     def sync_pending_for_agent(cls, agent_sid=None):
@@ -593,7 +619,7 @@ class RemoteAppService:
                     {
                         "$set": {
                             "reason": _clean_text(result.get("message")),
-                            "updated_at": datetime.utcnow(),
+                            "updated_at": datetime.now(timezone.utc),
                         },
                         "$inc": {"attempts": 1},
                     },

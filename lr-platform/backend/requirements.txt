@@ -13,6 +13,7 @@ passlib==1.7.4
 bcrypt==4.0.1
 email-validator==2.3.0
 requests==2.31.0
+types-requests==2.31.0.20240406
 httpx==0.28.1
 psutil==6.0.0
 paramiko==3.4.0

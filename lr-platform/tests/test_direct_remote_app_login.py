@@ -61,7 +61,7 @@ class DirectRemoteAppLoginTests(unittest.TestCase):
         self.assertIn('HttpOnly', cookie)
         self.assertIn('Secure', cookie)
         self.assertIn('SameSite=Lax', cookie)
-        login.assert_called_once_with('alice', 'secret', None, inactive_status=403)
+        login.assert_called_once_with('alice', 'secret', None, inactive_status=403, remember_me=False)
 
     @patch('backend.api.routers.auth_route.AuthService.login')
     def test_remoteapp_login_does_not_require_any_assigned_application(

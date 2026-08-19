@@ -2,6 +2,7 @@ from shared.security.password import hash_password
 from backend.security.credential_crypto import encrypt_secret
 from backend.models.user import User
 from backend.services.windows_account_service import WindowsAccountService
+from backend.services.user_desktop_service import UserDesktopService
 
 
 class UserService:
@@ -69,7 +70,12 @@ class UserService:
         }
         user.update(windows_updates or {})
 
-        return self.user_repository.create(user)
+        created_user = self.user_repository.create(user)
+        try:
+            UserDesktopService.register_user_desktop(created_user)
+        except Exception:
+            pass
+        return created_user
 
     def update_user(self, user_id, data):
         user = self.user_repository.get_by_id(user_id)

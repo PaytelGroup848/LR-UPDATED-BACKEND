@@ -198,12 +198,30 @@ class UrlsTab(ttk.Frame):
     def refresh(self):
         if not self.app.require_login():
             return
-        try:
-            self.links = self.app.client.login_links(limit=100)
-            self._fill_links()
-            self.app.set_status(f'Loaded {len(self.links)} access URLs')
-        except ApiError as error:
+        if getattr(self, "_is_loading", False):
+            return
+        self._is_loading = True
+
+        import threading
+
+        def worker():
+            try:
+                links = self.app.client.login_links(limit=100)
+                self.after(0, lambda: self._on_refreshed(links, None))
+            except Exception as error:
+                self.after(0, lambda: self._on_refreshed(None, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_refreshed(self, links, error):
+        self._is_loading = False
+        if error:
             messagebox.showerror('URLs', str(error))
+            self.app.set_status(f'URLs load error: {error}')
+            return
+        self.links = links if isinstance(links, list) else []
+        self._fill_links()
+        self.app.set_status(f'Loaded {len(self.links)} access URLs')
 
     def generate(self):
         self.generated_url = ''

@@ -29,7 +29,7 @@ def create_desktop_shortcut():
         if os.path.exists(shortcut_path):
             return
 
-        from win32com.client import Dispatch
+        from win32com.client import Dispatch  # type: ignore
 
         shell = Dispatch("WScript.Shell")
         shortcut = shell.CreateShortCut(shortcut_path)
@@ -110,10 +110,15 @@ class LRRemoteAccessClient(
     def run(self):
         self.root.mainloop()
 
-    def _clear_rdp_credentials(self):
+    def _clear_rdp_credentials(self, purge: bool = False):
         self._rdp_session_password = None
         self._rdp_session_username = None
-        self._rdp_credential_cache.restore_all()
+        from session.credential_store import get_client_credential_store
+        store_data = get_client_credential_store().load()
+        remembered = bool(store_data.get("remember_me"))
+        if purge or not remembered:
+            get_client_credential_store().clear()
+            self._rdp_credential_cache.restore_all()
 
     def _close_client(self):
         self.print_agents.stop_all()

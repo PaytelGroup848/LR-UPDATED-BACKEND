@@ -9,6 +9,8 @@ class LoginRequest(BaseModel):
 
     company_code: str | None = None
 
+    remember_me: bool = False
+
 
 class RegisterRequest(BaseModel):
 

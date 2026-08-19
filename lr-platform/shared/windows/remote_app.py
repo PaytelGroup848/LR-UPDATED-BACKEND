@@ -5,10 +5,14 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from shared.windows.rds_provisioner import RDS_PROVISIONER_SCRIPT
+
 
 _REMOTE_APP_SCRIPT = r'''param([string]$PayloadBase64)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+
+''' + RDS_PROVISIONER_SCRIPT + r'''
 
 function Write-LRResult {
     param([hashtable]$Result, [int]$ExitCode = 0)
@@ -47,83 +51,81 @@ function Add-BrokerArgument {
     }
 }
 
-function Resolve-LRCollection {
-    param([string]$RequestedCollection, [string]$ConnectionBroker)
+function Ensure-LRRDSRoles {
+    if (-not (Get-Module -ListAvailable -Name RemoteDesktop)) {
+        try {
+            $missing = @()
+            foreach ($feature in @('RDS-RD-Server', 'RDS-Connection-Broker', 'RDS-Web-Access')) {
+                $state = Get-WindowsFeature -Name $feature -ErrorAction SilentlyContinue
+                if ($state -and -not $state.Installed) {
+                    $missing += $feature
+                }
+            }
+            if ($missing.Count -gt 0) {
+                Install-WindowsFeature -Name $missing -IncludeManagementTools -ErrorAction Stop | Out-Null
+            }
+        } catch {}
+        Import-Module ServerManager -ErrorAction SilentlyContinue
+    }
+    Import-Module RemoteDesktop -ErrorAction Stop
+}
+
+function Ensure-LRRDSDeployment {
+    param([string]$ConnectionBroker)
 
     $lookup = @{}
     Add-BrokerArgument -Arguments $lookup -ConnectionBroker $ConnectionBroker
-    if ($RequestedCollection) {
-        try {
-            $collection = Get-RDSessionCollection -CollectionName $RequestedCollection @lookup -ErrorAction Stop
-        } catch {
-            if ($ConnectionBroker -and (Test-LRIsLocalHost -ServerName $ConnectionBroker)) {
-                $collection = Get-RDSessionCollection -CollectionName $RequestedCollection -ErrorAction Stop
-            } else {
-                throw
-            }
-        }
-        if (-not $collection) { throw "RDS collection '$RequestedCollection' was not found." }
-        return $RequestedCollection
-    }
+    try {
+        $deployment = Get-RDDeployment @lookup -ErrorAction Stop
+        if ($deployment) { return }
+    } catch {}
 
+    try {
+        $deployment = Get-RDDeployment -ErrorAction Stop
+        if ($deployment) { return }
+    } catch {}
+
+    $serverName = $env:COMPUTERNAME
+    New-RDSessionDeployment -ConnectionBroker $serverName -WebAccessServer $serverName -SessionHost $serverName -ErrorAction Stop | Out-Null
+}
+
+function Resolve-LRCollection {
+    param([string]$RequestedCollection, [string]$ConnectionBroker)
+
+    Ensure-LRRDSRoles
+    Ensure-LRRDSDeployment -ConnectionBroker $ConnectionBroker
+
+    $lookup = @{}
+    Add-BrokerArgument -Arguments $lookup -ConnectionBroker $ConnectionBroker
+
+    $collections = @()
     try {
         $collections = @(Get-RDSessionCollection @lookup -ErrorAction Stop)
     } catch {
-        if ($ConnectionBroker -and (Test-LRIsLocalHost -ServerName $ConnectionBroker)) {
-            $collections = @(Get-RDSessionCollection -ErrorAction Stop)
-        } else {
-            throw
-        }
-    }
-    if ($collections.Count -eq 0) {
-        throw 'No RDS session collection was found. Create a collection in Server Manager first.'
-    }
-    if ($collections.Count -eq 1) {
-        return [string]$collections[0].CollectionName
-    }
-    $quickCollection = $collections | Where-Object { [string]$_.CollectionName -eq 'QuickSessionCollection' } | Select-Object -First 1
-    if ($quickCollection) {
-        return 'QuickSessionCollection'
-    }
-
-    $localNames = @($env:COMPUTERNAME)
-    try {
-        $localNames += [System.Net.Dns]::GetHostEntry($env:COMPUTERNAME).HostName
-    } catch {}
-    $localNames = @($localNames | Where-Object { $_ } | ForEach-Object { $_.ToLowerInvariant() } | Select-Object -Unique)
-
-    $matches = @()
-    foreach ($candidate in $collections) {
         try {
-            $hostLookup = @{ CollectionName = [string]$candidate.CollectionName }
-            Add-BrokerArgument -Arguments $hostLookup -ConnectionBroker $ConnectionBroker
-            try {
-                $hosts = @(Get-RDSessionHost @hostLookup -ErrorAction Stop)
-            } catch {
-                if ($ConnectionBroker -and (Test-LRIsLocalHost -ServerName $ConnectionBroker)) {
-                    $hosts = @(Get-RDSessionHost -CollectionName [string]$candidate.CollectionName -ErrorAction Stop)
-                } else {
-                    throw
-                }
-            }
-            foreach ($hostEntry in $hosts) {
-                $hostName = [string]$hostEntry.SessionHost
-                if ($hostName -and $localNames -contains $hostName.ToLowerInvariant()) {
-                    $matches += [string]$candidate.CollectionName
-                    break
-                }
-                if ($hostName -and $localNames -contains $hostName.Split('.')[0].ToLowerInvariant()) {
-                    $matches += [string]$candidate.CollectionName
-                    break
-                }
-            }
+            $collections = @(Get-RDSessionCollection -ErrorAction Stop)
         } catch {}
     }
-    $matches = @($matches | Select-Object -Unique)
-    if ($matches.Count -eq 1) { return $matches[0] }
 
-    $available = ($collections | ForEach-Object { $_.CollectionName }) -join ', '
-    throw "Multiple RDS collections were found ($available). Configure the collection name for this server."
+    if ($RequestedCollection) {
+        $found = $collections | Where-Object { [string]$_.CollectionName -eq $RequestedCollection } | Select-Object -First 1
+        if ($found) { return $RequestedCollection }
+
+        $serverName = $env:COMPUTERNAME
+        New-RDSessionCollection -CollectionName $RequestedCollection -SessionHost $serverName -ConnectionBroker $serverName -ErrorAction Stop | Out-Null
+        return $RequestedCollection
+    }
+
+    if ($collections.Count -ge 1) {
+        $quickCollection = $collections | Where-Object { [string]$_.CollectionName -eq 'QuickSessionCollection' } | Select-Object -First 1
+        if ($quickCollection) { return 'QuickSessionCollection' }
+        return [string]$collections[0].CollectionName
+    }
+
+    $targetCollection = 'QuickSessionCollection'
+    $serverName = $env:COMPUTERNAME
+    New-RDSessionCollection -CollectionName $targetCollection -SessionHost $serverName -ConnectionBroker $serverName -ErrorAction Stop | Out-Null
+    return $targetCollection
 }
 
 function Resolve-LRExecutable {
@@ -261,13 +263,21 @@ function Get-LRStandaloneRemoteApp {
 
     $keyPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList\Applications\$Alias"
     if (-not (Test-Path -LiteralPath $keyPath)) { return $null }
-    $item = Get-ItemProperty -LiteralPath $keyPath -ErrorAction Stop
-    return [pscustomobject]@{
-        Alias = $Alias
-        DisplayName = [string]$item.Name
-        FilePath = [string]$item.Path
-        CommandLineSetting = [int]$item.CommandLineSetting
-        RequiredCommandLine = [string]$item.RequiredCommandLine
+    try {
+        $item = Get-ItemProperty -LiteralPath $keyPath -ErrorAction Stop
+        $dispName = if ($item.PSObject.Properties['Name']) { [string]$item.PSObject.Properties['Name'].Value } else { $Alias }
+        $filePath = if ($item.PSObject.Properties['Path']) { [string]$item.PSObject.Properties['Path'].Value } else { '' }
+        $cmdSetting = if ($item.PSObject.Properties['CommandLineSetting']) { [int]$item.PSObject.Properties['CommandLineSetting'].Value } else { 0 }
+        $reqCmd = if ($item.PSObject.Properties['RequiredCommandLine']) { [string]$item.PSObject.Properties['RequiredCommandLine'].Value } else { '' }
+        return [pscustomobject]@{
+            Alias = $Alias
+            DisplayName = $dispName
+            FilePath = $filePath
+            CommandLineSetting = $cmdSetting
+            RequiredCommandLine = $reqCmd
+        }
+    } catch {
+        return $null
     }
 }
 
@@ -284,6 +294,12 @@ function Set-LRStandaloneRemoteApp {
     $appsPath = Join-Path $rootPath 'Applications'
     New-Item -Path $appsPath -Force -ErrorAction Stop | Out-Null
     New-ItemProperty -LiteralPath $rootPath -Name 'fDisabledAllowList' -PropertyType DWord -Value 1 -Force | Out-Null
+    New-ItemProperty -LiteralPath $rootPath -Name 'fAllowNonListWithShell' -PropertyType DWord -Value 1 -Force | Out-Null
+
+    $tsPolicyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    New-Item -Path $tsPolicyPath -Force -ErrorAction SilentlyContinue | Out-Null
+    New-ItemProperty -LiteralPath $tsPolicyPath -Name 'MaxDisconnectedTime' -PropertyType DWord -Value 5000 -Force | Out-Null
+    New-ItemProperty -LiteralPath $tsPolicyPath -Name 'ResetBroken' -PropertyType DWord -Value 1 -Force | Out-Null
 
     $actualPath = $FilePath
     $cmdArgs = $Arguments
@@ -292,7 +308,17 @@ function Set-LRStandaloneRemoteApp {
         $cmdArgs = "`"$SourceFilePath`""
     }
 
-    $aliasesToRegister = @($Alias, $DisplayName, ($Alias -replace '[^a-zA-Z0-9_-]+', '')) | Where-Object { $_ } | Select-Object -Unique
+    $pathLeaf = if ($actualPath) { [System.IO.Path]::GetFileNameWithoutExtension($actualPath) } else { '' }
+    $aliasesToRegister = @(
+        $Alias,
+        $DisplayName,
+        $pathLeaf,
+        $(if ($actualPath.ToLowerInvariant().EndsWith('explorer.exe')) { 'explorer' } else { '' }),
+        ($Alias -replace '[^a-zA-Z0-9_-]+', ''),
+        ($Alias -replace '[^a-zA-Z0-9_-]+', '-').Trim('-'),
+        ($DisplayName -replace '[^a-zA-Z0-9_-]+', '-').Trim('-'),
+        ($pathLeaf -replace '[^a-zA-Z0-9_-]+', '-').Trim('-')
+    ) | Where-Object { $_ } | Select-Object -Unique
     foreach ($a in $aliasesToRegister) {
         $keyPath = Join-Path $appsPath $a
         New-Item -Path $keyPath -Force -ErrorAction SilentlyContinue | Out-Null
@@ -301,9 +327,9 @@ function Set-LRStandaloneRemoteApp {
         New-ItemProperty -LiteralPath $keyPath -Name 'VPath' -PropertyType String -Value $(if ($SourceFilePath -ne $actualPath) { $SourceFilePath } else { '' }) -Force | Out-Null
         New-ItemProperty -LiteralPath $keyPath -Name 'IconPath' -PropertyType String -Value $actualPath -Force | Out-Null
         New-ItemProperty -LiteralPath $keyPath -Name 'IconIndex' -PropertyType DWord -Value 0 -Force | Out-Null
-        New-ItemProperty -LiteralPath $keyPath -Name 'ShowInTSWA' -PropertyType DWord -Value 0 -Force | Out-Null
-        New-ItemProperty -LiteralPath $keyPath -Name 'CommandLineSetting' -PropertyType DWord -Value $(if ($cmdArgs) { 2 } else { 0 }) -Force | Out-Null
-        New-ItemProperty -LiteralPath $keyPath -Name 'RequiredCommandLine' -PropertyType String -Value $cmdArgs -Force | Out-Null
+        New-ItemProperty -LiteralPath $keyPath -Name 'ShowInTSWA' -PropertyType DWord -Value 1 -Force | Out-Null
+        New-ItemProperty -LiteralPath $keyPath -Name 'CommandLineSetting' -PropertyType DWord -Value 2 -Force | Out-Null
+        New-ItemProperty -LiteralPath $keyPath -Name 'RequiredCommandLine' -PropertyType String -Value '' -Force | Out-Null
     }
     return Get-LRStandaloneRemoteApp -Alias $Alias
 }
@@ -338,37 +364,29 @@ try {
     $existing = $null
     $standaloneMode = $false
     $rdsFallbackReason = ''
-    if ($requestedCollection -or $connectionBroker) {
-        try {
-            if (-not (Get-Module -ListAvailable -Name RemoteDesktop)) {
-                throw 'The Windows RemoteDesktop PowerShell module is not installed. Install the RDS management tools first.'
-            }
-            Import-Module RemoteDesktop -ErrorAction Stop
-            $collectionName = Resolve-LRCollection -RequestedCollection $requestedCollection -ConnectionBroker $connectionBroker
+    try {
+        $infraCollection = Ensure-LRRDSInfrastructure -RequestedCollection $requestedCollection -ConnectionBroker $connectionBroker
+        if ($infraCollection -in @('STANDALONE_CLIENT', 'STANDALONE_SERVER')) {
+            $standaloneMode = $true
+            $collectionName = ''
+            $existing = Get-LRStandaloneRemoteApp -Alias $alias
+        } else {
+            $collectionName = $infraCollection
             $lookup = @{ CollectionName = $collectionName; Alias = $alias }
             Add-BrokerArgument -Arguments $lookup -ConnectionBroker $connectionBroker
             $existing = Get-RDRemoteApp @lookup -ErrorAction SilentlyContinue
-        } catch {
-            $standaloneMode = $true
-            $rdsFallbackReason = $_.Exception.Message
-            $collectionName = ''
-            $existing = Get-LRStandaloneRemoteApp -Alias $alias
         }
-    } else {
-        try {
-            if (-not (Get-Module -ListAvailable -Name RemoteDesktop)) {
-                throw 'The Windows RemoteDesktop PowerShell module is not installed.'
-            }
-            Import-Module RemoteDesktop -ErrorAction Stop
-            $collectionName = Resolve-LRCollection -RequestedCollection '' -ConnectionBroker ''
-            $lookup = @{ CollectionName = $collectionName; Alias = $alias }
-            $existing = Get-RDRemoteApp @lookup -ErrorAction SilentlyContinue
-        } catch {
-            $standaloneMode = $true
-            $rdsFallbackReason = $_.Exception.Message
-            $collectionName = ''
-            $existing = Get-LRStandaloneRemoteApp -Alias $alias
+    } catch {
+        $errMessage = $_.Exception.Message
+        if ($errMessage -like "*restart*" -or $errMessage -like "*reboot*") {
+            Write-LRResult -Result @{
+                success = $false
+                status = 'pending_reboot'
+                message = $errMessage
+                reboot_required = $true
+            } -ExitCode 1
         }
+        throw
     }
 
     if ($action -eq 'remove') {
@@ -417,11 +435,9 @@ try {
                 ShowInWebAccess = $true
             }
             Add-BrokerArgument -Arguments $remoteApp -ConnectionBroker $connectionBroker
+            $remoteApp['CommandLineSetting'] = 'Allow'
             if ($arguments) {
-                $remoteApp['CommandLineSetting'] = 'Require'
                 $remoteApp['RequiredCommandLine'] = $arguments
-            } else {
-                $remoteApp['CommandLineSetting'] = 'DoNotAllow'
             }
 
             if ($existing) {
@@ -432,9 +448,11 @@ try {
                 $operation = 'published'
             }
             $verified = Get-RDRemoteApp @lookup -ErrorAction Stop
+            if (-not $verified) {
+                throw "RemoteApp '$alias' in collection '$collectionName' could not be verified via Get-RDRemoteApp after publication."
+            }
         } catch {
-            $standaloneMode = $true
-            $rdsFallbackReason = $_.Exception.Message
+            throw
         }
     }
 
@@ -495,15 +513,30 @@ def run_remote_app_action(payload, timeout=180):
             "message": "RemoteApp publishing must run on a Windows RDS server.",
         }
 
+    payload_copy = dict(payload or {})
+    script_override = str(payload_copy.pop("script_override", "") or "").strip()
+    if script_override:
+        if script_override.startswith("GZIP:"):
+            try:
+                import gzip
+                raw_bytes = base64.b64decode(script_override[5:])
+                script_content = gzip.decompress(raw_bytes).decode("utf-8")
+            except Exception:
+                script_content = _REMOTE_APP_SCRIPT
+        else:
+            script_content = script_override
+    else:
+        script_content = _REMOTE_APP_SCRIPT
+
     encoded_payload = base64.b64encode(
-        json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
+        json.dumps(payload_copy, ensure_ascii=False).encode("utf-8")
     ).decode("ascii")
     script_path = None
     try:
         with tempfile.NamedTemporaryFile(
             "w", suffix=".ps1", delete=False, encoding="utf-8"
         ) as handle:
-            handle.write(_REMOTE_APP_SCRIPT)
+            handle.write(script_content)
             script_path = handle.name
 
         completed = subprocess.run(
@@ -539,7 +572,7 @@ def run_remote_app_action(payload, timeout=180):
 
     result = _decode_result(completed.stdout)
     if result is not None:
-        if completed.returncode != 0:
+        if completed.returncode != 0 and not result.get("success"):
             result["success"] = False
             result.setdefault("status", "failed")
         return result

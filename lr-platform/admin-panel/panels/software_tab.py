@@ -122,20 +122,42 @@ class SoftwareTab(ttk.Frame):
     def refresh(self):
         if not self.app.require_login():
             return
-        try:
-            self.servers = self.app.client.servers()
-            self.apps = self.app.client.apps()
-            self._fill()
-            self.app.on_apps_loaded(self.apps)
-            self.app.set_status(f'Loaded {len(self.apps)} software items')
-        except ApiError as error:
+        if getattr(self, "_is_loading", False):
+            return
+        self._is_loading = True
+
+        import threading
+
+        def worker():
+            try:
+                servers = self.app.client.servers()
+                apps = self.app.client.apps()
+                self.after(0, lambda: self._on_refreshed(servers, apps, None))
+            except Exception as error:
+                self.after(0, lambda: self._on_refreshed(None, None, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_refreshed(self, servers, apps, error):
+        self._is_loading = False
+        if error:
             messagebox.showerror('Software', str(error))
+            self.app.set_status(f'Software load error: {error}')
+            return
+        self.servers = servers if isinstance(servers, list) else []
+        self.apps = apps if isinstance(apps, list) else []
+        self._fill()
+        self.app.on_apps_loaded(self.apps)
+        self.app.set_status(f'Loaded {len(self.apps)} software items')
 
     def selected_app(self):
         selection = self.tree.selection()
         if not selection:
             return None
-        app_id = str(self.tree.item(selection[0], 'values')[0])
+        values = self.tree.item(selection[0], 'values')
+        if not values or not isinstance(values, (list, tuple)):
+            return None
+        app_id = str(values[0])
         return next((item for item in self.apps if str(item.get('id')) == app_id), None)
 
     def add_software(self):

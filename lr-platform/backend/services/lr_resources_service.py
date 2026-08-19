@@ -3,6 +3,7 @@ from backend.models.assignment import ApplicationAssignment
 from backend.models.server import Server
 from backend.models.user import User
 from backend.services.portal_service import PortalService
+from backend.services.user_desktop_service import UserDesktopService
 
 
 def _resource_type(app):
@@ -29,10 +30,25 @@ def _resource_payload(app):
     }
 
 
+def _has_remote_app_config(app):
+    return bool(
+        (app or {}).get("remote_app_program")
+        or (app or {}).get("remote_app_alias")
+        or (app or {}).get("initial_program")
+        or (app or {}).get("target")
+        or (app or {}).get("remote_app_file_path")
+        or (app or {}).get("remote_app_source_file_path")
+    )
+
+
 def _is_published_remote_app(app):
     item_type = str((app or {}).get("item_type") or "").strip().lower()
     publish_status = str((app or {}).get("remote_app_publish_status") or "").strip().lower()
-    return item_type not in {"desktop", "folder"} and publish_status != "unpublished"
+    return (
+        item_type not in {"desktop", "folder"}
+        and publish_status != "unpublished"
+        and _has_remote_app_config(app)
+    )
 
 
 def _is_published_folder(app):
@@ -240,6 +256,12 @@ class LrResourcesService:
 
     @staticmethod
     def my_resources(user_id):
+        user = User.get_by_id(user_id)
+        if user:
+            try:
+                UserDesktopService.register_user_desktop(user)
+            except Exception:
+                pass
         assigned_apps = PublishedApp.assigned_to_user(user_id)
         resources = [
             _resource_payload(app)

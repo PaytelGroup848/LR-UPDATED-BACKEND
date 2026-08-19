@@ -1,5 +1,5 @@
 import hmac
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import wraps
 from typing import Any, cast
 
@@ -12,17 +12,12 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from backend.models.user import User
 from backend.models.tenant import Tenant
+from backend.models.login_link import LoginLink
+from backend.models.activity_log import ActivityLog
 from backend.services.auth_service import AuthService
 from backend.services.auth_service import UserService
 from backend.services.lr_resources_service import LrResourcesService
 from backend.services.user_license_service import UserLicenseService
-from backend.models.login_link import LoginLink
-
-class ActivityLog:
-
-    @staticmethod
-    def log(*args, **kwargs):
-        return None
 
 auth = Blueprint("auth", __name__)
 
@@ -38,6 +33,14 @@ def _object_id(value):
         return ObjectId(str(value))
     except Exception:
         return None
+
+
+def _normalize_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in {"false", "0", "no", "off", ""}
 
 
 def _doc_get(doc, key, default=None):
@@ -84,11 +87,12 @@ def _create_user(username, password, role):
         "password": password,
         "role": role,
         "is_active": True,
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
     }
 
     result = User.collection.insert_one(payload)
     return User.get_by_id(result.inserted_id)
+
 
 def _set_user_fields(user_id, updates):
     if updates:
@@ -189,6 +193,7 @@ def login():
 
     login_options = {
         "inactive_status": 403 if connection_type in {"remoteapp", "desktop"} else 401,
+        "remember_me": _normalize_bool(data.get("remember_me"), False),
     }
     if str(data.get("company_code") or data.get("company") or "").strip():
         login_options["company"] = data.get("company_code") or data.get("company")

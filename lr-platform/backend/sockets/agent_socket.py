@@ -91,7 +91,13 @@ def handle_agent_connect(data):
     data = data or {}
     agent_id = data.get("agent_id")
     if agent_id:
-        identity = AgentEnrollmentService.authenticate_or_enroll(data)
+        try:
+            identity = AgentEnrollmentService.authenticate_or_enroll(data)
+        except Exception as error:
+            logger.error("Agent enrollment/authentication error for agent %s: %s", agent_id, error, exc_info=True)
+            disconnect(namespace="/agent")
+            return {"success": False, "message": f"Agent authentication failed: {str(error)}"}
+
         if not identity:
             logger.warning("Rejected unenrolled agent: %s", agent_id)
             disconnect(namespace="/agent")

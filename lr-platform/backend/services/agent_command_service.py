@@ -44,6 +44,20 @@ class AgentCommandService:
                     presence = dict(connected_agents[target_sid])
             except Exception:
                 presence = None
+
+        if not presence and server_id:
+            try:
+                from backend.models.server import Server
+                server_doc = Server.get_by_id(server_id, tenant_id) or Server.get_by_id(server_id)
+                if server_doc and (server_doc.get("agent_status") == "online" or server_doc.get("agent_id")):
+                    presence = {
+                        "tenant_id": str(server_doc.get("tenant_id") or tenant_id or ""),
+                        "server_id": str(server_doc.get("_id") or server_id or ""),
+                        "agent_id": str(server_doc.get("agent_id") or ""),
+                    }
+            except Exception:
+                presence = None
+
         if not presence:
             return {
                 "success": False,
@@ -122,7 +136,7 @@ class AgentCommandService:
             key = f"{cls.RESULT_PREFIX}:{request_id}"
             pipe = client.pipeline()
             pipe.rpush(key, json.dumps(result or {}, separators=(",", ":"), default=str))
-            pipe.expire(key, max(int(settings.AGENT_COMMAND_TIMEOUT_SECONDS) * 2, 60))
+            pipe.expire(key, max(settings.AGENT_COMMAND_TIMEOUT_SECONDS * 2, 60))
             pipe.execute()
             return
         with cls._lock:

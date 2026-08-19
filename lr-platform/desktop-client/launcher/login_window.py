@@ -9,6 +9,7 @@ from PIL import Image
 
 from config import DEFAULT_COMPANY_CODE, DEFAULT_SERVER_URL
 from session.api_client import LRApi
+from session.credential_store import get_client_credential_store
 
 
 VIEW_MODE_OPTIONS = ("Desktop View", "Remote App View")
@@ -25,7 +26,7 @@ VIEW_MODE_HELP = {
 class LoginWindowMixin:
     if TYPE_CHECKING:
         root: Any
-        api: LRApi
+        api: LRApi | None
         status: Any
         logo_image: Any
         company_entry: Any
@@ -132,6 +133,15 @@ class LoginWindowMixin:
             text_color="#64748b", font=("Segoe UI", 11),
         ).pack(anchor="w", pady=(3, 14))
 
+        stored_credentials = get_client_credential_store().load()
+        stored_username = stored_credentials.get("username", "")
+        stored_company = stored_credentials.get("company_code", "")
+        stored_password = stored_credentials.get("password", "")
+        if stored_username:
+            self._rdp_session_username = stored_username
+        if stored_password:
+            self._rdp_session_password = stored_password
+
         ctk.CTkLabel(
             fields, text="Company code", text_color="#334155",
             font=("Segoe UI", 11, "bold"),
@@ -142,6 +152,8 @@ class LoginWindowMixin:
         )
         if DEFAULT_COMPANY_CODE:
             self.company_entry.insert(0, DEFAULT_COMPANY_CODE)
+        elif stored_company:
+            self.company_entry.insert(0, stored_company)
         self.company_entry.pack(fill="x")
 
         ctk.CTkLabel(
@@ -152,6 +164,8 @@ class LoginWindowMixin:
             fields, placeholder_text="Username", width=330, height=42,
             corner_radius=9, border_color="#b8c8dc",
         )
+        if stored_username:
+            self.username_entry.insert(0, stored_username)
         self.username_entry.pack(fill="x")
 
         ctk.CTkLabel(
@@ -164,6 +178,23 @@ class LoginWindowMixin:
         )
         self.password_entry.pack(fill="x")
         self.password_entry.bind("<Return>", lambda _event: self.login())
+
+        remember_is_checked = bool(stored_credentials.get("remember_me", True if stored_username else False))
+        self.remember_me_var = ctk.BooleanVar(value=remember_is_checked)
+        self.remember_me_checkbox = ctk.CTkCheckBox(
+            fields,
+            text="Remember Me",
+            variable=self.remember_me_var,
+            font=("Segoe UI", 11),
+            text_color="#334155",
+            checkbox_width=18,
+            checkbox_height=18,
+            border_width=2,
+            corner_radius=4,
+            fg_color="#08a85a",
+            hover_color="#07894b",
+        )
+        self.remember_me_checkbox.pack(anchor="w", pady=(10, 0))
 
         # Keep both native connection choices pinned with the Login button.
         # They must never disappear below the scrollable credential fields.
@@ -222,8 +253,12 @@ class LoginWindowMixin:
     def login(self):
         company = self.company_entry.get().strip() if self.company_entry else ""
         username = self.username_entry.get().strip()
+        remember_me = self.remember_me_var.get() if getattr(self, "remember_me_var", None) else False
         cached_password = None
-        if username == getattr(self, "_rdp_session_username", None):
+        stored = get_client_credential_store().load()
+        if remember_me and username and username == stored.get("username"):
+            cached_password = stored.get("password")
+        if not cached_password and username == getattr(self, "_rdp_session_username", None):
             cached_password = getattr(self, "_rdp_session_password", None)
         password = self.password_entry.get() or cached_password
         if not company or not username or not password:
@@ -258,6 +293,17 @@ class LoginWindowMixin:
 
         try:
             login_result = self.api.post_json("/login", payload)
+            remember_me = self.remember_me_var.get() if getattr(self, "remember_me_var", None) else False
+            store = get_client_credential_store()
+            if remember_me:
+                store.save({
+                    "username": username,
+                    "password": password,
+                    "company_code": str(company or "").strip(),
+                    "remember_me": True,
+                })
+            else:
+                store.clear()
             self._rdp_session_password = password
             self._rdp_session_username = username
             self.root.after(0, self._clear_visible_password)

@@ -1,10 +1,13 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import ipaddress
 import re
 import secrets
 import socket
+
+def _utc_now():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 from backend.core.config import settings
 from backend.extensions import db
@@ -98,11 +101,12 @@ class AgentEnrollmentService:
         machine_claim = machine_claim or {}
         server_ip = cls._validate_server_claim(server, machine_claim)
         raw_token = secrets.token_urlsafe(32)
-        now = datetime.utcnow()
+        now = _utc_now()
         expires_at = now + timedelta(seconds=max(settings.AGENT_ENROLLMENT_TOKEN_EXPIRY_SECONDS, 60))
         cls.tokens.insert_one({
             "tenant_id": tenant_id,
             "server_id": as_object_id(server_id, field="server_id"),
+            "expected_machine_id": str(machine_claim.get("machine_id") or "").strip(),
             "expected_server_ip": server_ip,
             "expected_hostname": str(machine_claim.get("hostname") or "").strip(),
             "expected_ip_addresses": list(machine_claim.get("ip_addresses") or []),
@@ -115,16 +119,84 @@ class AgentEnrollmentService:
         return {"enrollment_token": raw_token, "expires_at": expires_at}
 
     @classmethod
-    def authenticate_or_enroll(cls, data):
-        print("\n========== AGENT CONNECT ==========")
-        print(data)
-        print("==================================\n")
-        now = datetime.utcnow()
-        agent_id = str(data.get("agent_id") or "").strip()
-        server_ip = str(data.get("ip_address") or "").strip()
+    def _upsert_credential_safely(cls, query, update_fields, set_on_insert):
+        from pymongo.errors import DuplicateKeyError
 
-        if not server_ip:
-            return None
+        try:
+            cls.credentials.update_one(
+                query,
+                {"$set": update_fields, "$setOnInsert": set_on_insert},
+                upsert=True,
+            )
+        except DuplicateKeyError:
+            match_query = {
+                "tenant_id": query.get("tenant_id"),
+                "server_id": query.get("server_id"),
+                "agent_id": query.get("agent_id"),
+            }
+            combined_fields = dict(update_fields)
+            combined_fields.update(set_on_insert)
+            cls.credentials.update_one(match_query, {"$set": combined_fields})
+
+    @classmethod
+    def _update_server_safely(cls, server_id, tenant_id, set_fields):
+        from pymongo.errors import DuplicateKeyError
+
+        target_fields = dict(set_fields)
+        server_ip = target_fields.get("agent_ip")
+        if server_ip:
+            conflicting_servers = list(
+                Server.collection.find(
+                    {"agent_ip": server_ip, "_id": {"$ne": server_id}}
+                )
+            )
+            for other_server in conflicting_servers:
+                other_agent = other_server.get("agent_id")
+                target_agent = target_fields.get("agent_id")
+                if not other_agent or other_agent == target_agent or other_server.get("agent_status") != "online":
+                    Server.collection.update_one(
+                        {"_id": other_server["_id"]},
+                        {"$unset": {"agent_ip": ""}},
+                    )
+                else:
+                    from backend.manager.logger import get_logger
+
+                    get_logger(__name__).warning(
+                        "IP conflict: %s is assigned to server %s; skipping agent_ip assignment for server %s",
+                        server_ip,
+                        other_server.get("_id"),
+                        server_id,
+                    )
+                    target_fields.pop("agent_ip", None)
+                    break
+
+        query = {"_id": server_id}
+        if tenant_id:
+            query["tenant_id"] = tenant_id
+
+        try:
+            Server.collection.update_one(query, {"$set": target_fields})
+        except DuplicateKeyError:
+            target_fields.pop("agent_ip", None)
+            if target_fields:
+                Server.collection.update_one(query, {"$set": target_fields})
+
+    @classmethod
+    def authenticate_or_enroll(cls, data):
+        from backend.manager.logger import get_logger
+
+        logger = get_logger(__name__)
+        logger.info(
+            "Agent connect request agent_id=%s machine_id=%s server_ip=%s hostname=%s",
+            data.get("agent_id"),
+            data.get("machine_id"),
+            data.get("ip_address") or data.get("server_ip"),
+            data.get("hostname"),
+        )
+        now = _utc_now()
+        agent_id = str(data.get("agent_id") or "").strip()
+        machine_id = str(data.get("machine_id") or "").strip()
+        server_ip = str(data.get("ip_address") or data.get("server_ip") or "127.0.0.1").strip()
         credential = str(data.get("agent_credential") or "").strip()
         if credential and agent_id:
             credential_query = {
@@ -132,13 +204,27 @@ class AgentEnrollmentService:
                 "credential_hash": cls._hash(credential),
                 "revoked_at": None,
             }
-           
+            if machine_id:
+                credential_query["machine_id"] = machine_id
+
             record = cls.credentials.find_one(credential_query)
             if record:
                 cls.credentials.update_one({"_id": record["_id"]}, {"$set": {"last_used_at": now, "server_ip": server_ip}})
+                cls._update_server_safely(
+                    record["server_id"],
+                    record.get("tenant_id"),
+                    {
+                        "agent_id": agent_id,
+                        "agent_ip": server_ip,
+                        "agent_hostname": str(data.get("hostname") or "").strip(),
+                        "agent_status": "online",
+                        "agent_last_seen": now,
+                    },
+                )
                 return {
                     "tenant_id": record["tenant_id"],
                     "server_id": record["server_id"],
+                    "machine_id": record.get("machine_id") or machine_id or agent_id,
                     "server_ip": server_ip,
                     "new_credential": None,
                 }
@@ -164,39 +250,43 @@ class AgentEnrollmentService:
                     },
                     {"$set": {"revoked_at": now}},
                 )
-                cls.credentials.update_one(
+                cls._upsert_credential_safely(
                     {
                         "tenant_id": record["tenant_id"],
                         "server_id": record["server_id"],
                         "agent_id": agent_id,
                         "server_ip": server_ip,
                     },
-                    {"$set": {
-                        "tenant_id": record["tenant_id"], "server_id": record["server_id"],
-                        "agent_id": agent_id, "server_ip": server_ip,
-                        "credential_hash": cls._hash(raw_credential),
-                        "revoked_at": None, "updated_at": now,
-                    }, "$setOnInsert": {"created_at": now}},
-                    upsert=True,
-                )
-                Server.collection.update_one(
                     {
-                        "_id": record["server_id"],
                         "tenant_id": record["tenant_id"],
-                    },
-                    {"$set": {
+                        "server_id": record["server_id"],
                         "agent_id": agent_id,
+                        "machine_id": machine_id or agent_id,
+                        "server_ip": server_ip,
+                        "credential_hash": cls._hash(raw_credential),
+                        "revoked_at": None,
+                        "updated_at": now,
+                    },
+                    {"created_at": now},
+                )
+                cls._update_server_safely(
+                    record["server_id"],
+                    record["tenant_id"],
+                    {
+                        "agent_id": agent_id,
+                        "agent_machine_id": machine_id or agent_id,
                         "agent_ip": server_ip,
                         "agent_hostname": str(data.get("hostname") or "").strip(),
                         "agent_ip_addresses": list(data.get("ip_addresses") or []),
                         "agent_status": "online",
                         "agent_enrolled_at": now,
                         "agent_last_seen": now,
-                    }},
+                    },
                 )
                 return {
                     "tenant_id": record["tenant_id"],
                     "server_id": record["server_id"],
+                    "machine_id": machine_id or agent_id,
                     "server_ip": server_ip,
                     "new_credential": raw_credential,
                 }
@@ -212,35 +302,33 @@ class AgentEnrollmentService:
                 server = Server.collection.find_one({"is_active": True})
             if server:
                 raw_credential = credential or secrets.token_urlsafe(48)
-                cls.credentials.update_one(
+                cls._upsert_credential_safely(
                     {
                         "tenant_id": server.get("tenant_id"),
                         "server_id": server.get("_id"),
                         "agent_id": agent_id,
                     },
                     {
-                        "$set": {
-                            "tenant_id": server.get("tenant_id"),
-                            "server_id": server.get("_id"),
-                            "agent_id": agent_id,
-                            "server_ip": server_ip,
-                            "credential_hash": cls._hash(raw_credential),
-                            "revoked_at": None,
-                            "updated_at": now,
-                        },
-                        "$setOnInsert": {"created_at": now},
+                        "tenant_id": server.get("tenant_id"),
+                        "server_id": server.get("_id"),
+                        "agent_id": agent_id,
+                        "server_ip": server_ip,
+                        "credential_hash": cls._hash(raw_credential),
+                        "revoked_at": None,
+                        "updated_at": now,
                     },
-                    upsert=True,
+                    {"created_at": now},
                 )
-                Server.collection.update_one(
-                    {"_id": server.get("_id")},
-                    {"$set": {
+                cls._update_server_safely(
+                    server.get("_id"),
+                    server.get("tenant_id"),
+                    {
                         "agent_id": agent_id,
                         "agent_ip": server_ip,
                         "agent_hostname": str(data.get("hostname") or "").strip(),
                         "agent_status": "online",
                         "agent_last_seen": now,
-                    }},
+                    },
                 )
                 return {
                     "tenant_id": server.get("tenant_id"),
@@ -260,7 +348,7 @@ class AgentEnrollmentService:
         server = Server.get_by_id(server_id, tenant_id)
         if not server:
             raise ValueError("Server not found")
-        now = datetime.utcnow()
+        now = _utc_now()
         cls.credentials.update_many(
             {
                 "tenant_id": tenant_id,

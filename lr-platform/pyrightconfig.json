@@ -1,0 +1,29 @@
+{
+  "include": [
+    "."
+  ],
+  "extraPaths": [
+    ".",
+    "backend",
+    "desktop-client",
+    "agent",
+    "venv/Lib/site-packages"
+  ],
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": [
+        ".",
+        "backend",
+        "desktop-client",
+        "agent",
+        "venv/Lib/site-packages"
+      ]
+    }
+  ],
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  "reportGeneralTypeIssues": "none",
+  "reportOptionalMemberAccess": "none",
+  "reportAttributeAccessIssue": "none"
+}

@@ -45,17 +45,28 @@ class AdminPanel:
         self.root = root
         self.root.title('LR Admin Panel')
         self._set_initial_window_size()
+        self._set_window_icon()
         self.store = SettingsStore()
         self.settings = self.store.load()
         self.client = ApiClient(
             self.settings.get("backend_url") or DEFAULT_BACKEND_URL
-)
+        )
         self.logged_in = False
         self._update_check_running = False
 
         apply_style(root)
         self._build()
         self.root.after(2500, self.check_for_updates_silent)
+
+    def _set_window_icon(self):
+        try:
+            icon_path = resource_path('lr-remote-logo.png')
+            if icon_path.exists():
+                icon_img = Image.open(icon_path)
+                self._icon_photo = ImageTk.PhotoImage(icon_img)
+                self.root.iconphoto(True, self._icon_photo)
+        except Exception:
+            pass
 
     def _set_initial_window_size(self):
         screen_width = self.root.winfo_screenwidth()
@@ -67,21 +78,17 @@ class AdminPanel:
         self.root.geometry(f'{width}x{height}+{x}+{y}')
         self.root.minsize(min(980, width), min(580, height))
 
-    def _load_logo(self, max_width=150):
+    def _load_logo(self, max_width=160, max_height=52):
         logo_path = resource_path('lr-remote-logo.png')
         if not logo_path.exists():
             return None
 
         try:
             image = Image.open(logo_path)
+            image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+            return ImageTk.PhotoImage(image)
         except (OSError, tk.TclError):
             return None
-
-        if image.width > max_width:
-            height = max(1, int(image.height * (max_width / image.width)))
-            image = image.resize((max_width, height), Image.Resampling.LANCZOS)
-
-        return ImageTk.PhotoImage(image)
 
     def _build(self):
         shell = tk.Frame(self.root, bg=BG)
@@ -95,10 +102,10 @@ class AdminPanel:
         brand.pack(fill=tk.X)
         brand.pack_propagate(False)
 
-        self.logo_image = self._load_logo()
+        self.logo_image = self._load_logo(max_width=160, max_height=54)
         if self.logo_image:
             tk.Label(brand, image=self.logo_image, bg=SIDEBAR, borderwidth=0).pack(
-                anchor=tk.W, padx=20, pady=(18, 4)
+                anchor=tk.W, padx=18, pady=(16, 4)
             )
         else:
             tk.Label(
@@ -406,6 +413,8 @@ class AdminPanel:
         self.logged_in = value
         self.login_label.config(fg=SUCCESS if value else MUTED)
         self.login_label.config(text=f'Logged in: {username}' if value else 'Not logged in')
+        if value:
+            self.root.after(100, self.refresh_all)
 
     def require_login(self):
         if self.logged_in:
@@ -423,6 +432,8 @@ class AdminPanel:
         self.set_status('Logged out')
 
     def refresh_all(self):
+        if not self.logged_in:
+            return
         for tab in (
             self.servers_tab,
             self.users_tab,

@@ -101,7 +101,7 @@ class RemoteAppFieldTests(unittest.TestCase):
         )
 
         self.assertIsNone(sid)
-        self.assertIn("Configure", error)
+        self.assertIn("Configure","error")
 
     @patch("backend.services.remote_app_service.AgentCommandService.call_server")
     def test_publish_routes_through_exact_redis_backed_server_room(self, call_server):
@@ -127,7 +127,7 @@ class RemoteAppFieldTests(unittest.TestCase):
             spec["payload"],
             tenant_id="tenant-paytel",
             server_id="server-46",
-            timeout=30,
+            timeout=60,
         )
 
     @patch("backend.services.agent_command_service.AgentPresenceService.get_server", return_value=None)

@@ -15,13 +15,13 @@ class AgentPresenceService:
 
     @classmethod
     def _ttl(cls):
-        return max(int(settings.AGENT_PRESENCE_TTL_SECONDS), 30)
+        return max(settings.AGENT_PRESENCE_TTL_SECONDS, 30)
 
     @classmethod
     def _redis_url(cls):
         return (
-            str(settings.AGENT_PRESENCE_REDIS_URL or "").strip()
-            or str(settings.SOCKETIO_MESSAGE_QUEUE or "").strip()
+            (settings.AGENT_PRESENCE_REDIS_URL or "").strip()
+            or (settings.SOCKETIO_MESSAGE_QUEUE or "").strip()
         )
 
     @classmethod
@@ -57,15 +57,12 @@ class AgentPresenceService:
     @classmethod
     def register(cls, info):
         source = dict(info or {})
-        payload = {
-            key: value
-            for key, value in source.items()
-            if value is None or isinstance(value, (str, int, float, bool, list, dict))
-        }
-        # Socket enrollment returns Mongo ObjectIds for tenant/server. Redis
-        # keys and JSON presence payloads must use their stable string form;
-        # otherwise the serializer silently drops both IDs and exact routing
-        # reports an online Agent as offline.
+        payload = {}
+        for key, value in source.items():
+            if value is not None and isinstance(value, (str, int, float, bool, list, dict)):
+                payload[key] = value
+            elif value is not None:
+                payload[key] = str(value)
         for key in ("tenant_id", "server_id", "agent_id", "connection_id", "server_ip"):
             if source.get(key) not in (None, ""):
                 payload[key] = str(source[key])

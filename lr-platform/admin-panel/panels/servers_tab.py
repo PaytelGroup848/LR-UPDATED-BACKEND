@@ -274,20 +274,41 @@ class ServersTab(ttk.Frame):
     def refresh(self):
         if not self.app.require_login():
             return
-        try:
-            servers = self.app.client.servers()
-            self.servers = servers if isinstance(servers, list) else []
+        if getattr(self, "_is_loading", False):
+            return
+        self._is_loading = True
+        self.app.set_status("Loading servers...")
 
-            self._fill()
-            self.app.set_status(f"Loaded {len(self.servers)} servers")
-        except ApiError as e:
-            messagebox.showerror("Servers", str(e))
+        import threading
+
+        def worker():
+            try:
+                servers = self.app.client.servers()
+                data = servers if isinstance(servers, list) else []
+                self.after(0, lambda: self._on_refreshed(data, None))
+            except Exception as error:
+                self.after(0, lambda: self._on_refreshed(None, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_refreshed(self, data, error):
+        self._is_loading = False
+        if error:
+            messagebox.showerror("Servers", str(error))
+            self.app.set_status(f"Servers load error: {error}")
+            return
+        self.servers = data
+        self._fill()
+        self.app.set_status(f"Loaded {len(self.servers)} servers")
 
     def _selected_server(self):
         selected = self.tree.selection()
         if not selected:
             return None
-        server_id = str(self.tree.item(selected[0])["values"][0])
+        values = self.tree.item(selected[0]).get("values")
+        if not values or not isinstance(values, (list, tuple)):
+            return None
+        server_id = str(values[0])
         return next(
             (item for item in self.servers if str(item.get("id")) == server_id),
             None,
@@ -414,7 +435,7 @@ class ServersTab(ttk.Frame):
                 {"key": "username", "label": "Username"},
                 {"key": "password", "label": "Password", "show": "*"},
                 {"key": "domain", "label": "Windows Hostname/Domain"},
-                {"key": "port", "label": "Port", "default": "3389"},
+                {"key": "port", "label": "Port", "default": "35110"},
                 {"key": "agent_id", "label": "LR Agent ID (blank = auto)"},
                 {"key": "rds_collection_name", "label": "RDS Collection (blank = auto)"},
                 {"key": "rds_connection_broker", "label": "Connection Broker (blank = local)"},
@@ -439,7 +460,9 @@ class ServersTab(ttk.Frame):
             messagebox.showwarning("Edit", "Please select a server")
             return
 
-        values = self.tree.item(selected[0])["values"]
+        values = self.tree.item(selected[0]).get("values")
+        if not values or not isinstance(values, (list, tuple)):
+            return
         server_id = values[0]
         server = next((item for item in self.servers if str(item.get("id")) == str(server_id)), None)
         if not server:
@@ -491,7 +514,10 @@ class ServersTab(ttk.Frame):
         if not selected:
             return
 
-        server_id = self.tree.item(selected[0])["values"][0]
+        values = self.tree.item(selected[0]).get("values")
+        if not values or not isinstance(values, (list, tuple)):
+            return
+        server_id = values[0]
 
         try:
             self.app.client.delete(f"/delete-server/{server_id}")

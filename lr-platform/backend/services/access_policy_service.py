@@ -18,9 +18,11 @@ def _object_id(value):
 
 
 def _id_variants(value):
-    variants = [str(value)]
+    if not value:
+        return []
+    variants: list[str | ObjectId] = [str(value)]
     object_id = _object_id(value)
-    if object_id:
+    if object_id and object_id not in variants:
         variants.append(object_id)
     return variants
 

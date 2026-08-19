@@ -4,21 +4,43 @@ import re
 import socket
 import hashlib
 import hmac
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from typing import TypedDict
 from secrets import token_urlsafe
 from urllib.parse import quote
+
+def _utc_now():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 from bson.objectid import ObjectId
 from flask import current_app, has_app_context, has_request_context, request
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
+# pyrefly: ignore [missing-import]
 from backend.models.application import PublishedApp
+# pyrefly: ignore [missing-import]
 from backend.models.assignment import ApplicationAssignment
+# pyrefly: ignore [missing-import]
 from backend.models.rdp_session import RdpSession
+# pyrefly: ignore [missing-import]
 from backend.models.server import Server
+# pyrefly: ignore [missing-import]
 from backend.models.user import User
+# pyrefly: ignore [missing-import]
 from backend.security.credential_crypto import decrypt_secret
+# pyrefly: ignore [missing-import]
+
+
+class RdpIdentity(TypedDict):
+    username: str
+    password: str
+    domain: str
+    mode: str
+    isolated: bool
+    warning: str | None
+
 from backend.services.access_policy_service import AccessPolicyService
+# pyrefly: ignore [missing-import]
 from backend.services.audit_service import AuditService
 
 
@@ -82,28 +104,62 @@ def _normalize_remote_app_alias(alias):
 
 
 def _native_remote_app_rdp_lines(app):
+    if not app:
+        return []
+
+    item_type = str((app or {}).get("item_type") or (app or {}).get("type") or "").strip().lower()
+    folder_path = str((app or {}).get("folder_path") or "").strip()
+    target = str((app or {}).get("target") or "").strip()
+    arguments = str((app or {}).get("arguments") or "").strip()
+    working_directory = str((app or {}).get("working_directory") or "").strip()
     remote_app_program = str((app or {}).get("remote_app_program") or "").strip()
     remote_app_alias = str((app or {}).get("remote_app_alias") or "").strip()
+    initial_program = str((app or {}).get("initial_program") or "").strip()
+    remote_app_file_path = str((app or {}).get("remote_app_file_path") or (app or {}).get("remote_app_source_file_path") or "").strip()
+    name = str((app or {}).get("name") or "").strip()
 
-    if remote_app_program.startswith("||"):
-        remote_app_program = f"||{_normalize_remote_app_alias(remote_app_program)}"
-    elif remote_app_program and "\\" not in remote_app_program and "/" not in remote_app_program:
-        remote_app_program = f"||{_normalize_remote_app_alias(remote_app_program)}"
-    elif remote_app_alias:
-        remote_app_program = f"||{_normalize_remote_app_alias(remote_app_alias)}"
+    is_folder = (
+        item_type == "folder"
+        or bool(folder_path)
+        or "folder-" in remote_app_alias
+        or "folder-" in remote_app_program
+    )
 
-    if not remote_app_program or not remote_app_program.startswith("||"):
-        return []
+    exec_path = initial_program or target or remote_app_file_path
+
+    raw_alias = remote_app_alias or remote_app_program or name or (
+        exec_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1] if exec_path else "remoteapp"
+    )
+    normalized_program = f"||{_normalize_remote_app_alias(raw_alias)}"
+
+    # 1. Folders: Launch via RemoteApp mode (explorer.exe with folder path argument)
+    if is_folder:
+        folder_target = folder_path or target or arguments or working_directory
+        lines = [
+            _rdp_int_line("remoteapplicationmode", 1),
+            _rdp_line("remoteapplicationprogram", "||explorer"),
+            _rdp_line("remoteapplicationname", name or "Folder"),
+            _rdp_line("remoteapplicationcmdline", f'"{folder_target}"' if folder_target else ""),
+            _rdp_int_line("disableshell", 0),
+        ]
+        if folder_target:
+            lines.append(_rdp_line("shell working directory", folder_target))
+        return lines
 
     lines = [
         _rdp_int_line("remoteapplicationmode", 1),
-        _rdp_line("remoteapplicationprogram", remote_app_program),
-        _rdp_line("remoteapplicationname", (app or {}).get("remote_app_alias") or (app or {}).get("name")),
-        _rdp_line("remoteapplicationcmdline", (app or {}).get("arguments")),
+        _rdp_line("remoteapplicationprogram", normalized_program),
+        _rdp_line("remoteapplicationname", (app or {}).get("remote_app_alias") or name or "RemoteApp"),
+        _rdp_line("remoteapplicationcmdline", arguments),
+        _rdp_int_line("disableshell", 0),
     ]
-    working_directory = str((app or {}).get("working_directory") or (app or {}).get("folder_path") or "").strip()
-    if working_directory:
-        lines.append(_rdp_line("shell working directory", working_directory))
+
+    work_dir = working_directory or (
+        exec_path.rsplit("\\", 1)[0] if exec_path and "\\" in exec_path else ""
+    )
+    if work_dir:
+        lines.append(_rdp_line("shell working directory", work_dir))
+
     return lines
 
 
@@ -144,8 +200,11 @@ def _browser_launch_ttl_seconds():
 
 
 def _browser_launch_serializer():
+    secret_key = current_app.secret_key
+    if not secret_key:
+        raise RuntimeError("Flask application secret_key is not set")
     return URLSafeTimedSerializer(
-        current_app.secret_key,
+        secret_key,
         salt=_BROWSER_REMOTE_APP_TICKET_SALT,
     )
 
@@ -212,10 +271,10 @@ def _ignore_stored_display_mode(data):
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _rdp_identity_for_user(user, server):
+def _rdp_identity_for_user(user, server) -> RdpIdentity:
     portal_username = (user or {}).get("username") or ""
     windows_username = (user or {}).get("windows_username") or portal_username
-    windows_password = decrypt_secret((user or {}).get("windows_password"))
+    windows_password = decrypt_secret((user or {}).get("windows_password")) or ""
     account_scope = str((user or {}).get("windows_account_scope") or "").strip().lower()
     if account_scope == "local":
         windows_domain = ""
@@ -242,9 +301,10 @@ def _rdp_identity_for_user(user, server):
             ),
         }
 
+    shared_password = decrypt_secret(server.get("password")) or ""
     return {
         "username": server.get("username") or "",
-        "password": decrypt_secret(server.get("password")),
+        "password": shared_password,
         "domain": server.get("windows_domain") or server.get("domain") or server.get("hostname") or "",
         "mode": "shared_server_credentials",
         "isolated": False,
@@ -493,7 +553,7 @@ class PortalService:
             app,
             server,
         )
-        now = datetime.utcnow()
+        now = _utc_now()
         expires_at = now + timedelta(seconds=_browser_launch_ttl_seconds())
         rdp_file_expires_at = now + timedelta(minutes=2)
         updated = RdpSession.collection.update_one(
@@ -568,7 +628,7 @@ class PortalService:
             return {"success": False, "error": "RemoteApp launch ticket is not valid for this session."}, 403
 
         expires_at = session.get("browser_launch_expires_at")
-        if expires_at and expires_at < datetime.utcnow():
+        if expires_at and expires_at < _utc_now():
             return {"success": False, "error": "RemoteApp launch ticket has expired."}, 401
         nonce_hash = hashlib.sha256(str(payload.get("nonce") or "").encode("utf-8")).hexdigest()
         if not hmac.compare_digest(nonce_hash, str(session.get("browser_launch_nonce_hash") or "")):
@@ -584,7 +644,7 @@ class PortalService:
                     {"browser_launch_used_at": {"$exists": False}},
                 ],
             },
-            {"$set": {"browser_launch_used_at": datetime.utcnow()}},
+            {"$set": {"browser_launch_used_at": _utc_now()}},
         )
         if consumed.matched_count != 1:
             return {"success": False, "error": "RemoteApp launch ticket has already been used."}, 409
@@ -720,6 +780,11 @@ class PortalService:
         require_remote_app=False,
         native_remote_app=False,
     ):
+        import time
+        time.sleep(0.5)  # Throttle parallel launches with 500ms gap per user
+        if (app or {}).get("rds_collection_name") or server.get("rds_collection_name"):
+            time.sleep(1.0)  # 1-2s handshake delay for Connection Broker redirection
+
         user = User.get_by_id(user_id)
         display_mode = requested_view or (None if ignore_stored_display_mode else _display_mode(app))
         display_mode = (display_mode or "remote_app") if app else (display_mode or "full_desktop")
@@ -755,7 +820,7 @@ class PortalService:
                     host=connection_host,
                     port=int(server.get("port") or 3389),
                     rdp_username=guac_username,
-                    rdp_password=rdp_identity.get("password") or "",
+                    rdp_password=rdp_identity["password"],
                     domain=guac_domain,
                     app=launch_app,
                     require_remote_app=require_remote_app,
@@ -790,7 +855,7 @@ class PortalService:
             "launch_mode": launch_mode,
             "native_remote_app": bool(native_remote_app),
             "rdp_file_expires_at": (
-                datetime.utcnow() + timedelta(minutes=2)
+                _utc_now() + timedelta(minutes=2)
                 if native_remote_app
                 else None
             ),
@@ -887,8 +952,8 @@ class PortalService:
             {"_id": session["_id"]},
             {
                 "$set": {
-                    "last_seen_at": datetime.utcnow(),
-                    "reconnected_at": datetime.utcnow(),
+                    "last_seen_at": _utc_now(),
+                    "reconnected_at": _utc_now(),
                     "reconnect_user_agent": user_agent,
                     "reconnect_ip_address": ip_address,
                 }
@@ -909,6 +974,7 @@ class PortalService:
                     str(session.get("guac_connection_id")),
                     guac_token,
                 )
+        session = RdpSession.get_by_id(session["_id"]) or session
         response = {
             "success": True,
             "message": "Session recovered",
@@ -953,7 +1019,7 @@ class PortalService:
             return None, "RDP file endpoint requires a RemoteApp session", 409
         if native_remote_app:
             expires_at = session.get("rdp_file_expires_at")
-            if expires_at and expires_at < datetime.utcnow():
+            if expires_at and expires_at < _utc_now():
                 return None, "RemoteApp file link has expired", 401
             if consume_native and session.get("rdp_file_downloaded_at"):
                 return None, "RemoteApp file has already been downloaded", 409
@@ -1001,7 +1067,6 @@ class PortalService:
             "redirectclipboard:i:1",
             "redirectprinters:i:0",
             "administrative session:i:0",
-            "disableconnectionsharing:i:0",
             "prompt for credentials:i:0",
             "promptcredentialonce:i:1",
             "enablecredsspsupport:i:1",
@@ -1010,6 +1075,16 @@ class PortalService:
             _rdp_line("username", rdp_username),
         ]
 
+        is_folder_resource = bool(app and (app.get("item_type") == "folder" or (app.get("remote_app_file_path") or "").lower().endswith("explorer.exe")))
+        disable_sharing = 0 if is_folder_resource else 1
+        lines.append(f"disableconnectionsharing:i:{disable_sharing}")
+
+        use_broker = bool((app or {}).get("use_connection_broker") or server.get("use_connection_broker"))
+        if use_broker:
+            collection_name = (app or {}).get("rds_collection_name") or server.get("rds_collection_name") or "LR-RemoteApp-Collection"
+            lines.append(f"loadbalanceinfo:s:tsv://MS Terminal Services.1.{collection_name}")
+            lines.append("use redirection server name:i:0")
+
         if native_remote_app:
             remote_app_lines = _native_remote_app_rdp_lines(app)
             if not remote_app_lines:
@@ -1017,32 +1092,8 @@ class PortalService:
             lines.extend(remote_app_lines)
         elif app:
             display_mode = session.get("display_mode") or _display_mode(app)
-            launch_mode = _launch_mode(app, display_mode)
             if display_mode != "full_desktop":
-                remote_app_program = (app.get("remote_app_program") or "").strip()
-                initial_program = (app.get("initial_program") or remote_app_program or app.get("target") or "").strip()
-
-                item_type = str(app.get("item_type") or app.get("type") or "").strip().lower()
-                folder_path = app.get("folder_path")
-                is_folder = item_type == "folder" or bool(folder_path) or "folder-" in (app.get("remote_app_alias") or "") or "folder-" in remote_app_program
-
-                if launch_mode == "remote_app" and remote_app_program.startswith("||") and not is_folder:
-                    lines.extend([
-                        _rdp_int_line("remoteapplicationmode", 1),
-                        _rdp_line("remoteapplicationprogram", remote_app_program),
-                        _rdp_line("remoteapplicationname", app.get("remote_app_alias") or app.get("name")),
-                        _rdp_line("remoteapplicationcmdline", app.get("arguments")),
-                    ])
-                elif initial_program:
-                    initial_program = _published_program_path(app, initial_program, username)
-                    initial_program = _folder_program(app, initial_program)
-                    lines.extend([
-                        _rdp_line("alternate shell", initial_program),
-                        _rdp_line("shell working directory", _working_directory(
-                            initial_program,
-                            app.get("working_directory"),
-                        )),
-                    ])
+                lines.extend(_native_remote_app_rdp_lines(app))
 
         filename = f"{(app or server).get('name', 'lr-remote')}.rdp"
         safe_filename = "".join(char if char.isalnum() or char in "._-" else "_" for char in filename)
@@ -1057,7 +1108,7 @@ class PortalService:
                         {"rdp_file_downloaded_at": {"$exists": False}},
                     ],
                 },
-                {"$set": {"rdp_file_downloaded_at": datetime.utcnow()}},
+                {"$set": {"rdp_file_downloaded_at": _utc_now()}},
             )
             if consumed.matched_count != 1:
                 return None, "RemoteApp file has already been downloaded", 409

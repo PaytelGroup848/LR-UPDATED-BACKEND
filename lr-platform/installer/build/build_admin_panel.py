@@ -340,6 +340,30 @@ def _build_and_publish():
             "--add-data", f"{UPDATER_EXE}{os.pathsep}resources",
             "--add-data", f"{AGENT_EXE}{os.pathsep}resources/agent",
         ]
+        excludes = [
+            "PyQt5",
+            "PyQt5.QtCore",
+            "PyQt5.QtGui",
+            "PyQt5.QtWidgets",
+            "PyQt5.sip",
+            "PySide6",
+            "PySide6.QtCore",
+            "PySide6.QtGui",
+            "PySide6.QtWidgets",
+            "PySide6.QtNetwork",
+            "PySide6.QtOpenGL",
+            "shiboken6",
+            "cv2",
+            "numpy",
+            "matplotlib",
+            "scipy",
+            "pandas",
+            "customtkinter",
+            "unittest",
+            "tkinter.test",
+        ]
+        for item in excludes:
+            command += ["--exclude-module", item]
 
         icon_path = ICON_PATH if ICON_PATH.exists() else FALLBACK_ICON_PATH
         if icon_path.exists():

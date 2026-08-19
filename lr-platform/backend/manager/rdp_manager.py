@@ -3,8 +3,8 @@ import socket
 import threading
 import time
 import uuid
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, overload
 
 from flask import current_app
 
@@ -14,7 +14,15 @@ logger = logging.getLogger(__name__)
 
 
 def _utcnow():
-    return datetime.utcnow()
+    return datetime.now(timezone.utc)
+
+
+@overload
+def _as_bool(value: Any, default: bool) -> bool: ...
+@overload
+def _as_bool(value: Any, default: None) -> bool | None: ...
+@overload
+def _as_bool(value: Any, default: bool | None = True) -> bool | None: ...
 
 
 def _as_bool(value: Any, default: bool | None = True) -> bool | None:
@@ -147,7 +155,7 @@ class RDPSession:
             rdp_password=self.config["password"],
             domain=self.config["domain"],
             security=self.config["security"],
-            ignore_cert=self.config["ignore_cert"],
+            ignore_cert=self.config["ignore_cert"] if self.config["ignore_cert"] is not None else True,
             app=self.config["app"],
         )
         if not result.get("success"):

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 import re
 from flask_login import login_user, logout_user
@@ -9,6 +9,7 @@ from backend.models.tenant import Tenant, normalize_company_code
 from backend.models.user import User
 from backend.security.credential_crypto import encrypt_secret
 from backend.services.windows_account_service import WindowsAccountService
+from backend.services.user_desktop_service import UserDesktopService
 from shared.security.password import hash_password, verify_password
 
 
@@ -127,7 +128,7 @@ class AuthService:
         return user, None
 
     @staticmethod
-    def login(username, password, token=None, inactive_status=401, company=None):
+    def login(username, password, token=None, inactive_status=401, company=None, remember_me=False):
         username = _clean_text(username)
         password = str(password or "")
         company = _clean_text(company)
@@ -171,7 +172,7 @@ class AuthService:
             return None, "Two-factor verification is not configured", 501
 
         _sync_windows_credentials_from_login(user, username, password)
-        login_user(user)
+        login_user(user, remember=bool(remember_me))
         User.update_login(user.id, tenant_id=user.get("tenant_id"))
         return user, "Login successful", 200
 
@@ -182,12 +183,11 @@ class AuthService:
         if link is None or not LoginLink.is_valid(link):
             return None, "Invalid login link", 403
 
-        requested_company = normalize_company_code(company_code)
+        requested_company = normalize_company_code(company_code or "")
         if requested_company:
             tenant = Tenant.get_by_id(link.get("tenant_id"))
             link_company = normalize_company_code(
-                (tenant or {}).get("company_code")
-                or (tenant or {}).get("company_slug")
+                str((tenant or {}).get("company_code") or (tenant or {}).get("company_slug") or "")
             )
             if not tenant or not tenant.get("is_active") or requested_company != link_company:
                 return None, "Invalid login link company", 403
@@ -325,7 +325,7 @@ class AuthService:
         user_id = user.id
 
         updates = {
-            "created_at": datetime.utcnow(),
+            "created_at": datetime.now(timezone.utc),
             "created_by": actor_id,
         }
         if email:
@@ -338,6 +338,11 @@ class AuthService:
         if updates:
             User.update(user_id, updates, tenant_id=tenant_id)
             user = User.get_by_id(user_id, tenant_id=tenant_id)
+
+        try:
+            UserDesktopService.register_user_desktop(user)
+        except Exception:
+            pass
 
         return {
             "success": True,
@@ -361,7 +366,7 @@ class AuthService:
             return {"message": "User not found"}, 404
 
         updates = {
-            "updated_at": datetime.utcnow(),
+            "updated_at": datetime.now(timezone.utc),
             "updated_by": actor_id,
         }
 

@@ -297,28 +297,44 @@ class MonitorTab(ttk.Frame):
         if not self.app.require_login():
             self._schedule_auto_refresh()
             return
+        if getattr(self, "_is_loading", False):
+            return
+        self._is_loading = True
 
-        try:
-            monitoring = self.app.client.monitoring()
-            sessions = self._items(self.app.client.sessions(), "sessions")
-            agents = self._items(self.app.client.agents(), "agents")
-            streams = self._items(self.app.client.streams(), "streams")
-            alerts = self._items(self.app.client.error_logs(50), "errors")
-            events = self._items(self.app.client.logs(80), "logs")
-            self._last_payload = {
-                "monitoring": monitoring if isinstance(monitoring, dict) else {},
-                "sessions": sessions,
-                "agents": agents,
-                "streams": streams,
-                "alerts": alerts,
-                "events": events,
-            }
+        import threading
+
+        def worker():
+            try:
+                monitoring = self.app.client.monitoring()
+                sessions = self._items(self.app.client.sessions(), "sessions")
+                agents = self._items(self.app.client.agents(), "agents")
+                streams = self._items(self.app.client.streams(), "streams")
+                alerts = self._items(self.app.client.error_logs(50), "errors")
+                events = self._items(self.app.client.logs(80), "logs")
+                payload = {
+                    "monitoring": monitoring if isinstance(monitoring, dict) else {},
+                    "sessions": sessions,
+                    "agents": agents,
+                    "streams": streams,
+                    "alerts": alerts,
+                    "events": events,
+                }
+                self.after(0, lambda: self._on_refreshed(payload, None))
+            except Exception as error:
+                self.after(0, lambda: self._on_refreshed(None, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_refreshed(self, payload, error):
+        self._is_loading = False
+        if error:
+            messagebox.showerror("Monitor", str(error))
+            self.app.set_status(f"Monitor load error: {error}")
+        else:
+            self._last_payload = payload
             self._render_all()
             self.app.set_status("Monitor refreshed")
-        except ApiError as error:
-            messagebox.showerror("Monitor", str(error))
-        finally:
-            self._schedule_auto_refresh()
+        self._schedule_auto_refresh()
 
     def _render_all(self):
         monitoring = self._last_payload["monitoring"]

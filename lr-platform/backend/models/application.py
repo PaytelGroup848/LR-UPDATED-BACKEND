@@ -65,7 +65,8 @@ class PublishedApp:
             app = tenant_document(tenant_id, app)
 
         unique_checks = [{"slug": app["slug"]}]
-        if app.get("remote_app_alias"):
+        alias = (app.get("remote_app_alias") or "").strip().lower()
+        if alias and alias not in {"explorer", "windows-explorer-exe"}:
             unique_checks.append({"remote_app_alias": app["remote_app_alias"]})
         unique_query = {"$or": unique_checks}
         if tenant_id is not None:

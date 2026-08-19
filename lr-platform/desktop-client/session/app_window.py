@@ -1,11 +1,17 @@
 import os
 import re
 import tempfile
+import threading
+import time
 from tkinter import filedialog
 
 import customtkinter as ctk
 
+from session.credential_store import get_client_credential_store
 from session.windows_credentials import prepare_rdp_for_single_sign_on
+
+_CLIENT_LAUNCH_LOCK = threading.Lock()
+_LAST_CLIENT_LAUNCH_TIME = 0.0
 
 
 class AppWindowMixin:
@@ -279,10 +285,21 @@ class AppWindowMixin:
         self.run_async(lambda: self._launch_app(app))
 
     def _launch_app(self, app):
-        result = self.api.post_json(
-            "/api/lr/launch",
-            {"resource_id": app["id"], "type": app.get("type") or "application"},
-        )
+        global _LAST_CLIENT_LAUNCH_TIME
+        with _CLIENT_LAUNCH_LOCK:
+            now = time.time()
+            elapsed = now - _LAST_CLIENT_LAUNCH_TIME
+            if elapsed < 0.5:
+                time.sleep(0.5 - elapsed)
+            _LAST_CLIENT_LAUNCH_TIME = time.time()
+
+            # Handshake token sequencing: 250–300ms incremental delay per user session
+            time.sleep(0.28)
+
+            result = self.api.post_json(
+                "/api/lr/launch",
+                {"resource_id": app["id"], "type": app.get("type") or "application"},
+            )
         rdp_file_url = result.get('rdp_file_url')
 
         if rdp_file_url:
@@ -302,11 +319,21 @@ class AppWindowMixin:
             or 'RemoteApp RDP file URL was not returned by the server.'
         )
 
+    def _get_rdp_password(self):
+        if getattr(self, "_rdp_session_password", None):
+            return self._rdp_session_password
+        stored = get_client_credential_store().load()
+        password = stored.get("password")
+        if password:
+            self._rdp_session_password = password
+            return password
+        return None
+
     def _download_rdp_file(self, url, app):
         content, headers = self.api.get_bytes(url)
         content = prepare_rdp_for_single_sign_on(
             content,
-            getattr(self, "_rdp_session_password", None),
+            self._get_rdp_password(),
             self._rdp_credential_cache,
         )
         filename = self._rdp_filename(headers, app)

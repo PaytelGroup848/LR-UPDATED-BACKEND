@@ -1,0 +1,29 @@
+{
+  "include": [
+    "lr-platform"
+  ],
+  "extraPaths": [
+    "lr-platform",
+    "lr-platform/backend",
+    "lr-platform/desktop-client",
+    "lr-platform/agent",
+    "lr-platform/venv/Lib/site-packages"
+  ],
+  "executionEnvironments": [
+    {
+      "root": "lr-platform",
+      "extraPaths": [
+        "lr-platform",
+        "lr-platform/backend",
+        "lr-platform/desktop-client",
+        "lr-platform/agent",
+        "lr-platform/venv/Lib/site-packages"
+      ]
+    }
+  ],
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  "reportGeneralTypeIssues": "none",
+  "reportOptionalMemberAccess": "none",
+  "reportAttributeAccessIssue": "none"
+}

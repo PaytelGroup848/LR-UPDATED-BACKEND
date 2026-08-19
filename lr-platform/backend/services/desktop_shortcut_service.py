@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 import ntpath
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 from backend.extensions import db, socketio
 from backend.core.config import settings
@@ -36,6 +36,7 @@ def _shortcut_spec(app):
     target = _clean_text(app.get("target"))
     remote_app_program = _clean_text(app.get("remote_app_program"))
     remote_app_file_path = _clean_text(app.get("remote_app_file_path"))
+    remote_app_source_file_path = _clean_text(app.get("remote_app_source_file_path"))
     initial_program = _clean_text(app.get("initial_program"))
     folder_path = _clean_text(app.get("folder_path"))
     folder_permission = _clean_text(app.get("folder_permission") or "read").lower()
@@ -51,7 +52,13 @@ def _shortcut_spec(app):
             "folder_permission": folder_permission,
         }, None
 
-    target_path = target or remote_app_file_path or initial_program or remote_app_program
+    target_path = (
+        remote_app_source_file_path
+        or remote_app_file_path
+        or target
+        or initial_program
+        or remote_app_program
+    )
     if not target_path and (item_type == "desktop" or display_mode == "full_desktop" or launch_mode == "desktop"):
         return None, "Full desktop assignments do not create app shortcuts."
     if target_path.startswith("||"):
@@ -91,8 +98,8 @@ def _queue_shortcut_job(action, user, app, spec=None, reason=""):
         "shortcut_name": shortcut_name,
         "spec": spec or {},
         "reason": reason,
-        "updated_at": datetime.utcnow(),
-        "created_at": datetime.utcnow(),
+        "updated_at": datetime.now(timezone.utc),
+        "created_at": datetime.now(timezone.utc),
         "attempts": 0,
     }
     db["desktop_shortcut_jobs"].update_one(
@@ -215,14 +222,31 @@ function Grant-ShortcutMaintenanceAccess {
         throw ('Unable to repair managed shortcut permissions for ' + $Path)
     }
 }
+function Remove-PublicAppShortcut {
+    param([string]$Name)
+    if (-not $publicDesktop -or -not (Test-Path -LiteralPath $publicDesktop)) { return }
+    $cleanName = ($Name -replace '[\\/:*?"<>|]+', ' ').Trim()
+    $noSpaceName = ($cleanName -replace '\s+', '')
+    foreach ($item in Get-ChildItem -LiteralPath $publicDesktop -Filter '*.lnk' -File -ErrorAction SilentlyContinue) {
+        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($item.Name)
+        $cleanBase = ($baseName -replace '[\\/:*?"<>|]+', ' ').Trim()
+        $noSpaceBase = ($cleanBase -replace '\s+', '')
+        if ($cleanBase -eq $cleanName -or $noSpaceBase -eq $noSpaceName) {
+            Grant-ShortcutMaintenanceAccess -Path $item.FullName
+            Remove-Item -LiteralPath $item.FullName -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
 if ($action -eq 'delete') {
     if (Test-Path -LiteralPath $shortcutPath) {
         Grant-ShortcutMaintenanceAccess -Path $shortcutPath
         Remove-Item -LiteralPath $shortcutPath -Force
     }
     if (Test-Path -LiteralPath $legacyShortcutPath) { Remove-Item -LiteralPath $legacyShortcutPath -Force }
+    Remove-PublicAppShortcut -Name $shortcutName
     exit 0
 }
+Remove-PublicAppShortcut -Name $shortcutName
 $targetPath = [Environment]::ExpandEnvironmentVariables($targetPath)
 $workingDirectory = [Environment]::ExpandEnvironmentVariables($workingDirectory)
 $iconPath = [Environment]::ExpandEnvironmentVariables($iconPath)
@@ -454,6 +478,36 @@ class DesktopShortcutService:
         spec, error = _shortcut_spec(app or {})
         if error:
             return {"success": False, "message": error, "skipped": True}
+        spec = spec or {}
+
+        agent_sid = _agent_sid_for_app(app or {})
+        if agent_sid:
+            payload = {
+                "tenant_id": str((app or {}).get("tenant_id") or ""),
+                "username": username,
+                "shortcut_name": shortcut_name,
+                **spec,
+            }
+            try:
+                result = _call_agent(agent_sid, "create_desktop_shortcut", payload)
+                if result and result.get("success"):
+                    _clear_shortcut_job("create", user, app)
+                    return result
+                return _queue_shortcut_job(
+                    "create",
+                    user,
+                    app,
+                    spec,
+                    (result or {}).get("message") or "Windows Agent did not create shortcut.",
+                )
+            except Exception as error:
+                return _queue_shortcut_job(
+                    "create",
+                    user,
+                    app,
+                    spec,
+                    f"Windows Agent did not create shortcut: {error}",
+                )
 
         if settings.ALLOW_LEGACY_LOCAL_HOST_OPERATIONS and platform.system().lower() == "windows":
             result = _run_local_shortcut_script("create", username, shortcut_name, spec)
@@ -461,42 +515,13 @@ class DesktopShortcutService:
                 _clear_shortcut_job("create", user, app)
             return result
 
-        agent_sid = _agent_sid_for_app(app or {})
-        if not agent_sid:
-            return _queue_shortcut_job(
-                "create",
-                user,
-                app,
-                spec,
-                "No connected Windows Agent found for shortcut sync.",
-            )
-
-        payload = {
-            "tenant_id": str((app or {}).get("tenant_id") or ""),
-            "username": username,
-            "shortcut_name": shortcut_name,
-            **spec,
-        }
-        try:
-            result = _call_agent(agent_sid, "create_desktop_shortcut", payload)
-            if result and result.get("success"):
-                _clear_shortcut_job("create", user, app)
-                return result
-            return _queue_shortcut_job(
-                "create",
-                user,
-                app,
-                spec,
-                (result or {}).get("message") or "Windows Agent did not create shortcut.",
-            )
-        except Exception as error:
-            return _queue_shortcut_job(
-                "create",
-                user,
-                app,
-                spec,
-                f"Windows Agent did not create shortcut: {error}",
-            )
+        return _queue_shortcut_job(
+            "create",
+            user,
+            app,
+            spec,
+            "No connected Windows Agent found for shortcut sync.",
+        )
 
     @staticmethod
     def remove_assignment_shortcut(user, app):
@@ -508,46 +533,46 @@ class DesktopShortcutService:
         if not username:
             return {"success": False, "message": "Windows username is required."}
 
+        agent_sid = _agent_sid_for_app(app or {})
+        if agent_sid:
+            try:
+                result = _call_agent(
+                    agent_sid,
+                    "delete_desktop_shortcut",
+                    {"username": username, "shortcut_name": shortcut_name},
+                )
+                if result and result.get("success"):
+                    _clear_shortcut_job("delete", user, app)
+                    return result
+                return _queue_shortcut_job(
+                    "delete",
+                    user,
+                    app,
+                    {},
+                    (result or {}).get("message") or "Windows Agent did not delete shortcut.",
+                )
+            except Exception as error:
+                return _queue_shortcut_job(
+                    "delete",
+                    user,
+                    app,
+                    {},
+                    f"Windows Agent did not delete shortcut: {error}",
+                )
+
         if settings.ALLOW_LEGACY_LOCAL_HOST_OPERATIONS and platform.system().lower() == "windows":
             result = _run_local_shortcut_script("delete", username, shortcut_name, {})
             if result.get("success"):
                 _clear_shortcut_job("delete", user, app)
             return result
 
-        agent_sid = _agent_sid_for_app(app or {})
-        if not agent_sid:
-            return _queue_shortcut_job(
-                "delete",
-                user,
-                app,
-                {},
-                "No connected Windows Agent found for shortcut sync.",
-            )
-
-        try:
-            result = _call_agent(
-                agent_sid,
-                "delete_desktop_shortcut",
-                {"username": username, "shortcut_name": shortcut_name},
-            )
-            if result and result.get("success"):
-                _clear_shortcut_job("delete", user, app)
-                return result
-            return _queue_shortcut_job(
-                "delete",
-                user,
-                app,
-                {},
-                (result or {}).get("message") or "Windows Agent did not delete shortcut.",
-            )
-        except Exception as error:
-            return _queue_shortcut_job(
-                "delete",
-                user,
-                app,
-                {},
-                f"Windows Agent did not delete shortcut: {error}",
-            )
+        return _queue_shortcut_job(
+            "delete",
+            user,
+            app,
+            {},
+            "No connected Windows Agent found for shortcut sync.",
+        )
 
     @staticmethod
     def sync_pending_for_agent(agent_sid=None, reconcile_assignments=True):
@@ -575,7 +600,7 @@ class DesktopShortcutService:
             except Exception as error:
                 db["desktop_shortcut_jobs"].update_one(
                     {"_id": job["_id"]},
-                    {"$set": {"reason": str(error), "updated_at": datetime.utcnow()}, "$inc": {"attempts": 1}},
+                    {"$set": {"reason": str(error), "updated_at": datetime.now(timezone.utc)}, "$inc": {"attempts": 1}},
                 )
                 continue
 
@@ -588,7 +613,7 @@ class DesktopShortcutService:
                     {
                         "$set": {
                             "reason": (result or {}).get("message") or "Shortcut sync failed.",
-                            "updated_at": datetime.utcnow(),
+                            "updated_at": datetime.now(timezone.utc),
                         },
                         "$inc": {"attempts": 1},
                     },

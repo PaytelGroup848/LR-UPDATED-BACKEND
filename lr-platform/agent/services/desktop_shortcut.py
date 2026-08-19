@@ -162,6 +162,21 @@ function Grant-ShortcutMaintenanceAccess {
         throw ('Unable to repair managed shortcut permissions for ' + $Path)
     }
 }
+function Remove-PublicAppShortcut {
+    param([string]$Name)
+    if (-not $publicDesktop -or -not (Test-Path -LiteralPath $publicDesktop)) { return }
+    $cleanName = ($Name -replace '[\\/:*?"<>|]+', ' ').Trim()
+    $noSpaceName = ($cleanName -replace '\s+', '')
+    foreach ($item in Get-ChildItem -LiteralPath $publicDesktop -Filter '*.lnk' -File -ErrorAction SilentlyContinue) {
+        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($item.Name)
+        $cleanBase = ($baseName -replace '[\\/:*?"<>|]+', ' ').Trim()
+        $noSpaceBase = ($cleanBase -replace '\s+', '')
+        if ($cleanBase -eq $cleanName -or $noSpaceBase -eq $noSpaceName) {
+            Grant-ShortcutMaintenanceAccess -Path $item.FullName
+            Remove-Item -LiteralPath $item.FullName -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
 if ($action -eq 'delete') {
     if (Test-Path -LiteralPath $shortcutPath) {
         Grant-ShortcutMaintenanceAccess -Path $shortcutPath
@@ -170,8 +185,11 @@ if ($action -eq 'delete') {
     if (Test-Path -LiteralPath $legacyShortcutPath) {
         Remove-Item -LiteralPath $legacyShortcutPath -Force
     }
+    Remove-PublicAppShortcut -Name $shortcutName
     exit 0
 }
+
+Remove-PublicAppShortcut -Name $shortcutName
 
 if (-not $targetPath) { throw 'Shortcut target is required.' }
 $targetPath = [Environment]::ExpandEnvironmentVariables($targetPath)

@@ -107,27 +107,47 @@ class AssignFolderTab(ttk.Frame):
     def refresh(self):
         if not self.app.require_login():
             return
-        try:
-            self.users = self.app.client.users()
-            self.servers = self.app.client.servers()
-            self.apps = self.app.client.apps()
-            self.user_combo['values'] = [self._user_label(user) for user in self.users]
-            self.server_combo['values'] = [self._server_label(server) for server in self.servers]
-            if self.servers and not self.server_var.get():
-                self.server_var.set(self._server_label(self.servers[0]))
-            user_labels = [self._user_label(user) for user in self.users]
-            if user_labels:
-                if self.user_var.get() not in user_labels:
-                    self.user_var.set(user_labels[0])
-                    self.assigned_ids.clear()
-                self.load_for_user()
-            else:
-                self.user_var.set('')
-                self.assigned_ids.clear()
-                self._fill()
-            self.app.set_status('Folder assignments loaded')
-        except ApiError as error:
+        if getattr(self, "_is_loading", False):
+            return
+        self._is_loading = True
+
+        import threading
+
+        def worker():
+            try:
+                users = self.app.client.users()
+                servers = self.app.client.servers()
+                apps = self.app.client.apps()
+                self.after(0, lambda: self._on_refreshed(users, servers, apps, None))
+            except Exception as error:
+                self.after(0, lambda: self._on_refreshed(None, None, None, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_refreshed(self, users, servers, apps, error):
+        self._is_loading = False
+        if error:
             messagebox.showerror('Assign Folder', str(error))
+            self.app.set_status(f'Assign Folder error: {error}')
+            return
+        self.users = users if isinstance(users, list) else []
+        self.servers = servers if isinstance(servers, list) else []
+        self.apps = apps if isinstance(apps, list) else []
+        self.user_combo['values'] = [self._user_label(user) for user in self.users]
+        self.server_combo['values'] = [self._server_label(server) for server in self.servers]
+        if self.servers and not self.server_var.get():
+            self.server_var.set(self._server_label(self.servers[0]))
+        user_labels = [self._user_label(user) for user in self.users]
+        if user_labels:
+            if self.user_var.get() not in user_labels:
+                self.user_var.set(user_labels[0])
+                self.assigned_ids.clear()
+            self.load_for_user()
+        else:
+            self.user_var.set('')
+            self.assigned_ids.clear()
+            self._fill()
+        self.app.set_status('Folder assignments loaded')
 
     def update_sources(self, users=None, apps=None, servers=None):
         if users is not None:
@@ -150,13 +170,26 @@ class AssignFolderTab(ttk.Frame):
         user = self.selected_user()
         if not user:
             return
-        try:
-            data = self.app.client.assignments_for_user(user['id'])
-            self.assigned_ids = self._assigned_id_set(data)
-            self.apps = data.get('available_apps', self.apps)
-            self._fill()
-        except ApiError as error:
+        user_id = user['id']
+
+        import threading
+
+        def worker():
+            try:
+                data = self.app.client.assignments_for_user(user_id)
+                self.after(0, lambda: self._on_user_loaded(data, None))
+            except Exception as error:
+                self.after(0, lambda: self._on_user_loaded(None, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_user_loaded(self, data, error):
+        if error:
             messagebox.showerror('Assign Folder', str(error))
+            return
+        self.assigned_ids = self._assigned_id_set(data)
+        self.apps = (data if isinstance(data, dict) else {}).get('available_apps', self.apps)
+        self._fill()
 
     def browse_folder(self):
         path = filedialog.askdirectory(title='Select server folder', initialdir=self.path_var.get() or None)
@@ -194,15 +227,21 @@ class AssignFolderTab(ttk.Frame):
 
     def assign_folder_from_form(self):
         user = self.selected_user()
-        path = self.path_var.get().strip().strip('"')
-        permission = self.permission_var.get().strip() or 'read'
-        if not user or not path:
-            messagebox.showwarning('Assign Folder', 'Select user and folder path')
+        if not user:
+            messagebox.showwarning('Assign Folder', 'Select user')
             return
 
-        folder = self._find_folder(path, permission)
+        folder_id = self._selected_id(self.available_tree)
+        folder = self._folder_by_id(folder_id) if folder_id else None
+
         if not folder:
-            messagebox.showwarning('Assign Folder', 'Add this folder first, then assign it')
+            path = self.path_var.get().strip().strip('"')
+            permission = self.permission_var.get().strip() or 'read'
+            if path:
+                folder = self._find_folder(path, permission)
+
+        if not folder:
+            messagebox.showwarning('Assign Folder', 'Select an available folder or enter folder path')
             return
 
         try:
@@ -256,12 +295,12 @@ class AssignFolderTab(ttk.Frame):
 
     def selected_user(self):
         label = self.user_var.get()
-        user_id = str(label).split(' - ', 1)[0]
+        user_id = label.split(' - ', 1)[0]
         return next((user for user in self.users if str(user.get('id')) == user_id), None)
 
     def selected_server(self):
         label = self.server_var.get()
-        server_id = str(label).split(' - ', 1)[0]
+        server_id = label.split(' - ', 1)[0]
         return next((server for server in self.servers if str(server.get('id')) == server_id), None)
 
     def _selected_id(self, tree):

@@ -185,19 +185,40 @@ class UsersTab(ttk.Frame):
     def refresh(self):
         if not self.app.require_login():
             return
-        try:
-            self.users = self.app.client.users()
-            self._fill()
-            self.app.on_users_loaded(self.users)
-            self.app.set_status(f'Loaded {len(self.users)} users')
-        except ApiError as error:
+        if getattr(self, "_is_loading", False):
+            return
+        self._is_loading = True
+
+        import threading
+
+        def worker():
+            try:
+                users = self.app.client.users()
+                self.after(0, lambda: self._on_refreshed(users, None))
+            except Exception as error:
+                self.after(0, lambda: self._on_refreshed(None, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_refreshed(self, users, error):
+        self._is_loading = False
+        if error:
             messagebox.showerror('Users', str(error))
+            self.app.set_status(f'Users load error: {error}')
+            return
+        self.users = users if isinstance(users, list) else []
+        self._fill()
+        self.app.on_users_loaded(self.users)
+        self.app.set_status(f'Loaded {len(self.users)} users')
 
     def selected_user(self):
         selection = self.tree.selection()
         if not selection:
             return None
-        user_id = str(self.tree.item(selection[0], 'values')[0])
+        values = self.tree.item(selection[0], 'values')
+        if not values or not isinstance(values, (list, tuple)):
+            return None
+        user_id = str(values[0])
         return next((user for user in self.users if str(user.get('id')) == user_id), None)
 
     def add_user(self):
@@ -341,7 +362,12 @@ class UsersTab(ttk.Frame):
         user = self.selected_user()
         if not user:
             return
-        UserDetailsWindow(self, user, self._load_live_user_details(user))
+        win = UserDetailsWindow(self, user, None)
+        import threading
+        def worker():
+            live_data = self._load_live_user_details(user)
+            self.after(0, lambda: win.update_live_data(live_data) if win.winfo_exists() else None)
+        threading.Thread(target=worker, daemon=True).start()
 
     def _load_live_user_details(self, user):
         data = {
@@ -500,6 +526,12 @@ class UserDetailsWindow(tk.Toplevel):
         self.update_idletasks()
         self._center(parent.winfo_toplevel())
         self.focus_set()
+
+    def update_live_data(self, live_data):
+        self.live_data = live_data or {}
+        for child in self.winfo_children():
+            child.destroy()
+        self._build(self.user.get('username') or 'User')
 
     def _center(self, parent):
         parent.update_idletasks()

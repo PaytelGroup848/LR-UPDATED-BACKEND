@@ -1,5 +1,6 @@
 import io
 import re
+import typing
 import tkinter as tk
 from tkinter import colorchooser, filedialog, messagebox, ttk
 from urllib.parse import urlparse
@@ -395,11 +396,18 @@ class WebPortalTab(ttk.Frame):
         except (TypeError, ValueError):
             pass
         position = str(self._value("login_card_position", "center"))
-        relx = {"left": 0.06, "center": 0.5, "right": 0.94}.get(position, 0.5)
-        anchor = {"left": tk.W, "center": tk.CENTER, "right": tk.E}.get(
-            position,
-            tk.CENTER,
-        )
+        anchor_map: dict[str, typing.Literal["center", "w", "e"]] = {
+            "left": "w",
+            "center": "center",
+            "right": "e",
+        }
+        relx_map: dict[str, float] = {
+            "left": 0.08,
+            "center": 0.5,
+            "right": 0.92,
+        }
+        anchor = anchor_map.get(position, "center")
+        relx = relx_map.get(position, 0.5)
         card = tk.Frame(
             stage,
             bg=SURFACE,
@@ -633,21 +641,38 @@ class WebPortalTab(ttk.Frame):
     def refresh(self):
         if not self.app.require_login():
             return
-        try:
-            response = self.app.client.portal_customization_draft()
-            self._apply_settings(response.get("settings") or {})
-            published = response.get("published")
-            if published:
-                self.state_label.configure(
-                    text=(
-                        f"Draft v{self._settings.get('version', 0)}"
-                        f"  •  Published v{published.get('version', 0)}"
-                    ),
-                    fg=MUTED,
-                )
-            self.app.set_status("Web Portal customization loaded")
-        except ApiError as error:
+        if getattr(self, "_is_loading", False):
+            return
+        self._is_loading = True
+
+        import threading
+
+        def worker():
+            try:
+                response = self.app.client.portal_customization_draft()
+                self.after(0, lambda: self._on_refreshed(response, None))
+            except Exception as error:
+                self.after(0, lambda: self._on_refreshed(None, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_refreshed(self, response, error):
+        self._is_loading = False
+        if error:
             messagebox.showerror("Web Portal", str(error))
+            self.app.set_status(f"Web Portal error: {error}")
+            return
+        self._apply_settings((response or {}).get("settings") or {})
+        published = (response or {}).get("published")
+        if published:
+            self.state_label.configure(
+                text=(
+                    f"Draft v{self._settings.get('version', 0)}"
+                    f"  •  Published v{published.get('version', 0)}"
+                ),
+                fg=MUTED,
+            )
+        self.app.set_status("Web Portal customization loaded")
 
     def _save_draft(self, *, show_message):
         if not self.app.require_login():

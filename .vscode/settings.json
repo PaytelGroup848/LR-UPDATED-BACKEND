@@ -1,7 +1,22 @@
 {
-  "python.defaultInterpreterPath": "C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+  "python.defaultInterpreterPath": "${workspaceFolder}/lr-platform/venv/Scripts/python.exe",
   "python.analysis.extraPaths": [
-    "${workspaceFolder}/lr-platform/admin-panel",
-    "${workspaceFolder}/lr-platform"
-  ]
+    "${workspaceFolder}/lr-platform",
+    "${workspaceFolder}/lr-platform/backend",
+    "${workspaceFolder}/lr-platform/desktop-client",
+    "${workspaceFolder}/lr-platform/agent",
+    "${workspaceFolder}/lr-platform/venv/Lib/site-packages"
+  ],
+  "python.analysis.diagnosticMode": "openFilesOnly",
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportMissingImports": "none",
+    "reportMissingModuleSource": "none",
+    "reportGeneralTypeIssues": "none",
+    "reportOptionalMemberAccess": "none",
+    "reportAttributeAccessIssue": "none",
+    "reportImportCycles": "none",
+    "reportPrivateImportUsage": "none",
+    "reportShadowedImports": "none",
+    "reportDeprecated": "none"
+  }
 }

@@ -110,17 +110,33 @@ class PrintingTab(ttk.Frame):
     def refresh(self):
         if not self.app.require_login():
             return
-        try:
-            settings = self.app.client.printing_settings().get("settings", {})
-            status = self.app.client.printing_status()
-            jobs = self.app.client.printing_jobs(limit=300)
-            self._set_settings(settings)
-            self._replace_clients(status.get("active_clients", []))
-            self._replace_jobs(jobs)
-            self.app.set_status("Printing status refreshed")
-        except ApiError as error:
+        if getattr(self, "_is_loading", False):
+            return
+        self._is_loading = True
+
+        import threading
+
+        def worker():
+            try:
+                settings = self.app.client.printing_settings().get("settings", {})
+                status = self.app.client.printing_status()
+                jobs = self.app.client.printing_jobs(limit=300)
+                self.after(0, lambda: self._on_refreshed(settings, status, jobs, None))
+            except Exception as error:
+                self.after(0, lambda: self._on_refreshed(None, None, None, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_refreshed(self, settings, status, jobs, error):
+        self._is_loading = False
+        if error:
             self.app.set_status(f"Printing refresh failed: {error}")
             messagebox.showerror("Printing", str(error))
+            return
+        self._set_settings(settings or {})
+        self._replace_clients((status or {}).get("active_clients", []))
+        self._replace_jobs(jobs or [])
+        self.app.set_status("Printing status refreshed")
 
     def save(self):
         if not self.app.require_login():

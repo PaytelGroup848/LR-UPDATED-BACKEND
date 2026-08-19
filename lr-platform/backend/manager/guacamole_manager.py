@@ -1,36 +1,36 @@
-import requests
+import requests  # type: ignore
 import logging
 import uuid
 import ntpath
 import re
 import threading
 import time
-from requests.adapters import HTTPAdapter
+from requests.adapters import HTTPAdapter  # type: ignore
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
 
 def _unique_connection_name(name: str) -> str:
-    base_name = str(name or "LR Remote Session").strip() or "LR Remote Session"
+    base_name = (name or "LR Remote Session").strip() or "LR Remote Session"
     suffix = uuid.uuid4().hex[:8]
     max_base_length = 128 - len(suffix) - 3
     return f"{base_name[:max_base_length]} - {suffix}"
 
 
 def _working_directory(program: str | None, configured_directory: str | None = None) -> str:
-    value = str(configured_directory or "").strip()
+    value = (configured_directory or "").strip()
     if value and not value.lower().endswith((".exe", ".bat", ".cmd", ".msi")):
         return value
 
-    program = str(program or "").strip()
+    program = (program or "").strip()
     if "\\" in program:
         return ntpath.dirname(program)
     return ""
 
 
 def _username_leaf(username: str | None) -> str:
-    value = str(username or "").strip()
+    value = (username or "").strip()
     if "\\" in value:
         value = value.rsplit("\\", 1)[-1]
     if "@" in value:
@@ -39,12 +39,12 @@ def _username_leaf(username: str | None) -> str:
 
 
 def _safe_app_name(value: str | None) -> str:
-    name = re.sub(r'[\\/:*?"<>|]+', " ", str(value or "").strip()).strip()
+    name = re.sub(r'[\\/:*?"<>|]+', " ", (value or "").strip()).strip()
     return re.sub(r"\s+", " ", name) or "Application"
 
 
 def _published_program_path(app: dict | None, program: str | None, username: str | None) -> str:
-    program = str(program or "").strip()
+    program = (program or "").strip()
     if not program:
         return program
 
@@ -66,7 +66,7 @@ def _published_program_path(app: dict | None, program: str | None, username: str
 def _folder_program(app: dict | None, program: str | None) -> str:
     folder_path = str((app or {}).get("folder_path") or "").strip()
     if not folder_path:
-        return str(program or "").strip()
+        return (program or "").strip()
     return f'explorer.exe "{folder_path}"'
 
 
@@ -81,7 +81,7 @@ def _warn_if_likely_https_to_http_mismatch(public_url: str) -> None:
 
 
 def _visual_parameters(profile: str) -> dict[str, str]:
-    quality = str(profile or "balanced").strip().lower()
+    quality = (profile or "balanced").strip().lower()
 
     if quality == "performance":
         return {
@@ -171,14 +171,14 @@ class GuacamoleClient:
         self.data_source = data_source or "default"
         self._token = None
         self._token_expires_at = 0.0
-        self._token_cache_seconds = max(5, int(token_cache_seconds))
+        self._token_cache_seconds = max(5, token_cache_seconds)
         self._token_lock = threading.Lock()
-        self._timeout = (max(0.1, float(connect_timeout_seconds)), max(0.1, float(read_timeout_seconds)))
-        self.visual_quality = str(visual_quality or 'balanced').strip().lower()
-        self.enable_printing = bool(enable_printing)
-        self.printer_name = str(printer_name or "LR Remote Printer").strip()[:128]
-        self.max_connections = max(1, int(max_connections))
-        self.max_connections_per_user = max(1, int(max_connections_per_user))
+        self._timeout = (max(0.1, connect_timeout_seconds), max(0.1, read_timeout_seconds))
+        self.visual_quality = (visual_quality or 'balanced').strip().lower()
+        self.enable_printing = enable_printing
+        self.printer_name = (printer_name or "LR Remote Printer").strip()[:128]
+        self.max_connections = max(1, max_connections)
+        self.max_connections_per_user = max(1, max_connections_per_user)
         self._http = http_client or requests
 
 
@@ -258,7 +258,7 @@ class GuacamoleClient:
         self,
         name: str,
         host: str,
-        port: int = 3389,
+        port: int = 35110,
         rdp_username: str = "",
         rdp_password: str = "",
         domain: str = "",
@@ -373,6 +373,8 @@ class GuacamoleClient:
                     )
 
             if resp.status_code in (200, 201):
+                if not token:
+                    return {"success": False, "error": "Could not authenticate to Guacamole"}
                 data = resp.json()
                 connection_id = data.get("identifier")
                 return {
