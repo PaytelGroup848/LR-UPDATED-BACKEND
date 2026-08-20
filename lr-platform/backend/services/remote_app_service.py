@@ -119,9 +119,20 @@ class RemoteAppService:
                 incoming["target"] = folder_path
                 if not _clean_text(incoming.get("arguments")):
                     incoming["arguments"] = folder_path
-            incoming["initial_program"] = "explorer.exe"
-            incoming["remote_app_file_path"] = "explorer.exe"
-            file_path = "explorer.exe"
+            custom_exe = (
+                _clean_text(incoming.get("remote_app_file_path"))
+                or _clean_text(incoming.get("initial_program"))
+                or _clean_text(merged.get("remote_app_file_path"))
+                or _clean_text(merged.get("initial_program"))
+            )
+            if custom_exe and _looks_like_executable(custom_exe) and not custom_exe.lower().endswith("explorer.exe") and custom_exe.lower() != "explorer":
+                incoming["initial_program"] = custom_exe
+                incoming["remote_app_file_path"] = custom_exe
+                file_path = custom_exe
+            else:
+                incoming["initial_program"] = "explorer.exe"
+                incoming["remote_app_file_path"] = "explorer.exe"
+                file_path = "explorer.exe"
         else:
             file_path = _clean_text(merged.get("remote_app_file_path"))
             if not file_path and _looks_like_executable(program):

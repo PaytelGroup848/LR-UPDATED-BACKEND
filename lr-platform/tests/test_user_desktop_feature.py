@@ -37,13 +37,33 @@ class TestUserDesktopFeature(unittest.TestCase):
         self.assertEqual(app["folder_path"], r"C:\Users\demo1\Desktop")
         self.assertEqual(app["target"], r"C:\Users\demo1\Desktop")
         self.assertEqual(app["initial_program"], "explorer.exe")
-        self.assertEqual(app["arguments"], r"C:\Users\demo1\Desktop")
+        self.assertEqual(app["remote_app_file_path"], r"C:\Windows\explorer.exe")
+        self.assertEqual(app["arguments"], r'"C:\Users\demo1\Desktop"')
         self.assertEqual(app["remote_app_publish_status"], "published")
 
         # Check ApplicationAssignment
         assignment = ApplicationAssignment.find(user_id, app_id)
         self.assertIsNotNone(assignment)
         self.assertTrue(assignment.get("is_enabled"))
+
+    def test_fix_existing_user_desktops(self):
+        # Create an existing desktop app with old mstsc/explorer path
+        old_app = PublishedApp.create({
+            "name": "Desktop",
+            "slug": "desktop-olduser-123456",
+            "folder_path": r"C:\Users\olduser\Desktop",
+            "remote_app_file_path": r"C:\Windows\system32\mstsc.exe",
+            "initial_program": "explorer.exe",
+            "description": "Windows Desktop for olduser",
+        })
+        self.assertIsNotNone(old_app)
+
+        UserDesktopService.fix_existing_user_desktops()
+
+        updated = PublishedApp.collection.find_one({"_id": old_app["_id"]})
+        self.assertEqual(updated["remote_app_file_path"], r"C:\Windows\explorer.exe")
+        self.assertEqual(updated["initial_program"], "explorer.exe")
+        self.assertEqual(updated["arguments"], r'"C:\Users\olduser\Desktop"')
 
     def test_desktop_registration_prevents_duplicates(self):
         user_id = str(ObjectId())

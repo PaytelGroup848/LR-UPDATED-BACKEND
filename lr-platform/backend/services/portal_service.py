@@ -127,7 +127,13 @@ def _native_remote_app_rdp_lines(app):
 
     exec_path = initial_program or target or remote_app_file_path
 
-    raw_alias = remote_app_alias or remote_app_program or name or (
+    unique_slug = (app or {}).get("slug")
+    if not unique_slug or unique_slug in ("desktop", "explorer"):
+        folder_target_clean = folder_path or target or arguments or working_directory
+        if folder_target_clean and "Users\\" in folder_target_clean:
+            user_folder_name = folder_target_clean.rsplit("Users\\", 1)[-1].split("\\")[0]
+            unique_slug = f"desktop-{user_folder_name.lower()}"
+    raw_alias = unique_slug or remote_app_alias or remote_app_program or name or (
         exec_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1] if exec_path else "remoteapp"
     )
     normalized_program = f"||{_normalize_remote_app_alias(raw_alias)}"
@@ -135,11 +141,16 @@ def _native_remote_app_rdp_lines(app):
     # 1. Folders: Launch via RemoteApp mode (explorer.exe with folder path argument)
     if is_folder:
         folder_target = folder_path or target or arguments or working_directory
+        if folder_target:
+            try:
+                os.makedirs(folder_target, exist_ok=True)
+            except Exception:
+                pass
         lines = [
             _rdp_int_line("remoteapplicationmode", 1),
             _rdp_line("remoteapplicationprogram", "||explorer"),
             _rdp_line("remoteapplicationname", name or "Folder"),
-            _rdp_line("remoteapplicationcmdline", f'"{folder_target}"' if folder_target else ""),
+            _rdp_line("remoteapplicationcmdline", folder_target or ""),
             _rdp_int_line("disableshell", 0),
         ]
         if folder_target:
@@ -406,10 +417,16 @@ def _published_program_path(app, program, username):
 
 
 def _folder_program(app, program):
+    args = str((app or {}).get("arguments") or "").strip()
+    if args and "/root" in args:
+        return f'explorer.exe {args}'
     folder_path = str((app or {}).get("folder_path") or "").strip()
+    prog_str = str(program or "").strip()
+    if prog_str and not prog_str.lower().endswith("explorer.exe") and prog_str.lower() != "explorer":
+        return prog_str
     if not folder_path:
-        return program
-    return f'explorer.exe "{folder_path}"'
+        return prog_str
+    return f'explorer.exe /e,/root,"{folder_path}"'
 
 
 def _session_query(user_id, server, app):

@@ -64,10 +64,16 @@ def _published_program_path(app: dict | None, program: str | None, username: str
 
 
 def _folder_program(app: dict | None, program: str | None) -> str:
+    args = str((app or {}).get("arguments") or "").strip()
+    if args and "/root" in args:
+        return f'explorer.exe {args}'
     folder_path = str((app or {}).get("folder_path") or "").strip()
+    prog_str = str(program or "").strip()
+    if prog_str and not prog_str.lower().endswith("explorer.exe") and prog_str.lower() != "explorer":
+        return prog_str
     if not folder_path:
-        return (program or "").strip()
-    return f'explorer.exe "{folder_path}"'
+        return prog_str
+    return f'explorer.exe /e,/root,"{folder_path}"'
 
 
 def _warn_if_likely_https_to_http_mismatch(public_url: str) -> None:

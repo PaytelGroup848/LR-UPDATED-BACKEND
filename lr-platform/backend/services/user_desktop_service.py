@@ -1,4 +1,5 @@
 import logging
+import os
 from bson import ObjectId
 
 from backend.models.application import PublishedApp
@@ -32,6 +33,53 @@ def _object_id(value):
 
 class UserDesktopService:
     @classmethod
+    def fix_existing_user_desktops(cls):
+        r"""
+        Scans PublishedApp collection for all Desktop folder apps and updates
+        remote_app_file_path to C:\Windows\explorer.exe and arguments to /e,/root,"C:\Users\<win_username>\Desktop".
+        """
+        try:
+            query = {
+                "$or": [
+                    {"name": "Desktop"},
+                    {"slug": {"$regex": "^desktop-", "$options": "i"}},
+                    {"description": {"$regex": "^Windows Desktop for ", "$options": "i"}},
+                ]
+            }
+            cursor = PublishedApp.collection.find(query)
+            for app in cursor:
+                win_username = ""
+                folder_path = _clean_text(app.get("folder_path") or app.get("target") or app.get("arguments"))
+                if "Users\\" in folder_path:
+                    parts = folder_path.rsplit("Users\\", 1)[-1].split("\\")
+                    if parts:
+                        win_username = parts[0]
+                if not win_username:
+                    desc = _clean_text(app.get("description"))
+                    if desc.startswith("Windows Desktop for "):
+                        win_username = desc.replace("Windows Desktop for ", "").strip()
+
+                if win_username:
+                    desktop_path = f"C:\\Users\\{win_username}\\Desktop"
+                    expected_exe = r"C:\Windows\explorer.exe"
+                    expected_args = f'"{desktop_path}"'
+                    PublishedApp.collection.update_one(
+                        {"_id": app["_id"]},
+                        {
+                            "$set": {
+                                "remote_app_file_path": expected_exe,
+                                "initial_program": "explorer.exe",
+                                "folder_path": desktop_path,
+                                "target": desktop_path,
+                                "working_directory": desktop_path,
+                                "arguments": expected_args,
+                            }
+                        }
+                    )
+        except Exception as err:
+            logger.warning(f"Error fixing existing user desktops: {err}")
+
+    @classmethod
     def register_user_desktop(cls, user, server_id=None, bypass_existence_check=False):
         """
         Automatically registers the Windows Desktop folder item for a newly created user,
@@ -49,6 +97,8 @@ class UserDesktopService:
             if not win_username:
                 return None
 
+            cls.fix_existing_user_desktops()
+
             tenant_id = user.get("tenant_id")
             target_server_id = (
                 server_id
@@ -58,6 +108,7 @@ class UserDesktopService:
             )
 
             desktop_path = f"C:\\Users\\{win_username}\\Desktop"
+            desktop_args = f'"{desktop_path}"'
             try:
                 os.makedirs(desktop_path, exist_ok=True)
             except Exception:
@@ -91,8 +142,9 @@ class UserDesktopService:
                             "initial_program": "explorer.exe",
                             "target": desktop_path,
                             "folder_path": desktop_path,
-                            "arguments": desktop_path,
+                            "arguments": desktop_args,
                             "remote_app_publish_status": "published",
+                            "description": f"Windows Desktop for {win_username}",
                         }
                     }
                 )
@@ -113,7 +165,7 @@ class UserDesktopService:
                     "remote_app_file_path": r"C:\Windows\explorer.exe",
                     "remote_app_working_dir": desktop_path,
                     "working_directory": desktop_path,
-                    "arguments": desktop_path,
+                    "arguments": desktop_args,
                     "remote_app_alias": "explorer",
                     "remote_app_program": "||explorer",
                     "remote_app_publish_status": "published",
@@ -124,6 +176,9 @@ class UserDesktopService:
                 normalized_payload["remote_app_alias"] = "explorer"
                 normalized_payload["remote_app_program"] = "||explorer"
                 normalized_payload["remote_app_publish_status"] = "published"
+                normalized_payload["remote_app_file_path"] = r"C:\Windows\explorer.exe"
+                normalized_payload["initial_program"] = "explorer.exe"
+                normalized_payload["arguments"] = desktop_args
                 created_app = PublishedApp.create(normalized_payload, tenant_id=tenant_id)
                 if not created_app:
                     created_app = PublishedApp.collection.find_one(query)
@@ -139,7 +194,7 @@ class UserDesktopService:
                 except Exception as sync_err:
                     logger.warning(f"RDS sync for Desktop item {app_id} skipped: {sync_err}")
 
-                PublishedApp.collection.update_one({"_id": app["_id"]}, {"$set": {"remote_app_publish_status": "published", "remote_app_alias": "explorer", "remote_app_program": "||explorer"}})
+                PublishedApp.collection.update_one({"_id": app["_id"]}, {"$set": {"remote_app_publish_status": "published", "remote_app_alias": "explorer", "remote_app_program": "||explorer", "remote_app_file_path": r"C:\Windows\explorer.exe", "initial_program": "explorer.exe", "arguments": desktop_args}})
 
             # Make available ONLY to this user via ApplicationAssignment
             existing_assignment = ApplicationAssignment.find(user_id, app_id, tenant_id=tenant_id)

@@ -44,7 +44,7 @@ class RemoteAppMonitor:
         $missing = @()
         foreach ($k in $keys) {
             Set-ItemProperty -Path $k.PSPath -Name 'ShowInTSWA' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path $k.PSPath -Name 'CommandLineSetting' -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $k.PSPath -Name 'CommandLineSetting' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
         }
         $missing -join ','
         """

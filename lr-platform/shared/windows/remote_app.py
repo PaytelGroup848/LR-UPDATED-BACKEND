@@ -140,6 +140,13 @@ function Resolve-LRExecutable {
     if ($expanded -and (Test-Path -LiteralPath $expanded -PathType Leaf)) {
         return (Resolve-Path -LiteralPath $expanded).Path
     }
+    if ($expanded -and ($expanded.ToLowerInvariant().EndsWith('desktop.exe') -or $expanded.ToLowerInvariant().EndsWith('\desktop.exe'))) {
+        $parentDir = Split-Path -Parent $expanded
+        if ($parentDir -and -not (Test-Path -LiteralPath $parentDir)) {
+            try { New-Item -ItemType Directory -Path $parentDir -Force -ErrorAction SilentlyContinue | Out-Null } catch {}
+        }
+        return $expanded
+    }
     if ($expanded -and (Test-Path -LiteralPath $expanded -PathType Container)) {
         $explorerCmd = Get-Command 'explorer.exe' -ErrorAction SilentlyContinue
         if ($explorerCmd -and $explorerCmd.Source) {
@@ -303,6 +310,11 @@ function Set-LRStandaloneRemoteApp {
 
     $actualPath = $FilePath
     $cmdArgs = $Arguments
+    if ($SourceFilePath) {
+        if (-not (Test-Path -LiteralPath $SourceFilePath)) {
+            try { New-Item -ItemType Directory -Path $SourceFilePath -Force -ErrorAction SilentlyContinue | Out-Null } catch {}
+        }
+    }
     if (Test-Path -LiteralPath $SourceFilePath -PathType Container) {
         $actualPath = "$env:SystemRoot\explorer.exe"
         $cmdArgs = "`"$SourceFilePath`""
@@ -328,7 +340,7 @@ function Set-LRStandaloneRemoteApp {
         New-ItemProperty -LiteralPath $keyPath -Name 'IconPath' -PropertyType String -Value $actualPath -Force | Out-Null
         New-ItemProperty -LiteralPath $keyPath -Name 'IconIndex' -PropertyType DWord -Value 0 -Force | Out-Null
         New-ItemProperty -LiteralPath $keyPath -Name 'ShowInTSWA' -PropertyType DWord -Value 1 -Force | Out-Null
-        New-ItemProperty -LiteralPath $keyPath -Name 'CommandLineSetting' -PropertyType DWord -Value 2 -Force | Out-Null
+        New-ItemProperty -LiteralPath $keyPath -Name 'CommandLineSetting' -PropertyType DWord -Value 1 -Force | Out-Null
         New-ItemProperty -LiteralPath $keyPath -Name 'RequiredCommandLine' -PropertyType String -Value '' -Force | Out-Null
     }
     return Get-LRStandaloneRemoteApp -Alias $Alias
