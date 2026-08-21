@@ -146,11 +146,12 @@ def _native_remote_app_rdp_lines(app):
                 os.makedirs(folder_target, exist_ok=True)
             except Exception:
                 pass
+        locked_cmdline = f'/e,/root,"{folder_target}"' if folder_target else ""
         lines = [
             _rdp_int_line("remoteapplicationmode", 1),
             _rdp_line("remoteapplicationprogram", "||explorer"),
             _rdp_line("remoteapplicationname", name or "Folder"),
-            _rdp_line("remoteapplicationcmdline", folder_target or ""),
+            _rdp_line("remoteapplicationcmdline", locked_cmdline),
             _rdp_int_line("disableshell", 0),
         ]
         if folder_target:

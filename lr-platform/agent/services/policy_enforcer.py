@@ -1,6 +1,7 @@
 import getpass
 import platform
 import subprocess
+import time
 
 try:
     import winreg
@@ -23,6 +24,11 @@ POLICY_MAP = {
     "desktop_lock_wallpaper": ("hkcu", r"Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop", "NoChangingWallPaper", 1),
     "browser_disable_incognito": ("hkcu", r"Software\Policies\Google\Chrome", "IncognitoModeAvailability", 1),
     "browser_block_downloads": ("hkcu", r"Software\Policies\Google\Chrome", "DownloadRestrictions", 3),
+    "explorer_hide_all_drives": ("hkcu", r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoDrives", 67108863),
+    "explorer_hide_nethood": ("hkcu", r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoNetHood", 1),
+    "explorer_hide_nav_pane": ("hkcu", r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoNavPane", 1),
+    "explorer_lock_set_folders": ("hkcu", r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoSetFolders", 1),
+    "explorer_disable_search": ("hkcu", r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoFind", 1),
 }
 
 DISALLOW_RUN_KEYS = {
@@ -74,6 +80,9 @@ def apply_policy(policy, target_username=None):
         results[key] = {"success": False, "message": "Unknown policy key"}
 
     _refresh_explorer_policy()
+    lockdown_result = enforce_session_lockdown(target_username=target_username)
+    if not lockdown_result.get("success"):
+        results.setdefault("session_lockdown", lockdown_result)
     overall = all(result.get("success") for result in results.values()) if results else True
     return {
         "success": overall,
@@ -151,3 +160,51 @@ def _refresh_explorer_policy():
         subprocess.run(["gpupdate", "/target:user", "/force"], capture_output=True, timeout=30, check=False)
     except Exception:
         pass
+
+
+def _restart_explorer():
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "explorer.exe"],
+            capture_output=True, timeout=10, check=False,
+        )
+        time.sleep(1)
+        subprocess.Popen(["explorer.exe"])
+        return True
+    except Exception:
+        return False
+
+
+def enforce_session_lockdown(target_username=None):
+    """
+    Defense-in-depth helper: Re-applies Explorer navigation & drive hiding policies
+    directly to HKCU when an RDP/RemoteApp session is active.
+    """
+    if target_username:
+        current_user = getpass.getuser()
+        if str(target_username).lower() not in {current_user.lower(), f".\\{current_user.lower()}"}:
+            return {
+                "success": False,
+                "message": f"Refusing to apply session lockdown: agent is running as {current_user}, not in target user's session ({target_username}).",
+            }
+
+    if winreg is None:
+        return {"success": False, "message": "winreg unavailable"}
+    explorer_path = r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+    try:
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, explorer_path, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, "NoDrives", 0, winreg.REG_DWORD, 67108863)
+            winreg.SetValueEx(key, "NoNetHood", 0, winreg.REG_DWORD, 1)
+            winreg.SetValueEx(key, "NoNavPane", 0, winreg.REG_DWORD, 1)
+            winreg.SetValueEx(key, "PagesToOpenOnLaunch", 0, winreg.REG_DWORD, 1)
+            winreg.SetValueEx(key, "NoSetFolders", 0, winreg.REG_DWORD, 1)
+            winreg.SetValueEx(key, "NoFind", 0, winreg.REG_DWORD, 1)
+        _refresh_explorer_policy()
+        explorer_restarted = _restart_explorer()
+        return {
+            "success": True,
+            "message": "Session lockdown applied",
+            "explorer_restarted": explorer_restarted,
+        }
+    except Exception as err:
+        return {"success": False, "message": str(err)}

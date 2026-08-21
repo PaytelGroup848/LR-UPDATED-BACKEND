@@ -113,7 +113,7 @@ class ApiClient:
         return self.get(f'/users{query}').get('users', [])
 
     def create_user(self, payload):
-        return self.post('/users', payload)
+        return self.post('/users', payload, timeout=60)
 
     def register_company(self, payload):
         return self.post('/api/companies/register', payload)
@@ -128,10 +128,10 @@ class ApiClient:
         return self.delete(f'/servers/{server_id}/agent-binding')
 
     def update_user(self, user_id, payload):
-        return self.patch(f'/users/{user_id}', payload)
+        return self.patch(f'/users/{user_id}', payload, timeout=60)
 
     def delete_user(self, user_id):
-        return self.delete(f'/users/{user_id}')
+        return self.delete(f'/users/{user_id}', timeout=60)
 
     def user_licenses(self):
         data = self.get('/license/admin/users')
@@ -296,20 +296,20 @@ class ApiClient:
         logs = data.get('logs', []) if isinstance(data, dict) else data
         return logs if isinstance(logs, list) else []
 
-    def get(self, path):
-        return self._request('GET', path)
+    def get(self, path, **kwargs):
+        return self._request('GET', path, **kwargs)
 
-    def post(self, path, payload=None):
-        return self._request('POST', path, json=payload or {})
+    def post(self, path, payload=None, **kwargs):
+        return self._request('POST', path, json=payload or {}, **kwargs)
 
-    def put(self, path, payload=None):
-        return self._request('PUT', path, json=payload or {})
+    def put(self, path, payload=None, **kwargs):
+        return self._request('PUT', path, json=payload or {}, **kwargs)
 
-    def patch(self, path, payload=None):
-        return self._request('PATCH', path, json=payload or {})
+    def patch(self, path, payload=None, **kwargs):
+        return self._request('PATCH', path, json=payload or {}, **kwargs)
 
-    def delete(self, path):
-        return self._request('DELETE', path)
+    def delete(self, path, **kwargs):
+        return self._request('DELETE', path, **kwargs)
 
     def _request(self, method, path, **kwargs):
         url = urljoin(self.base_url + '/', path.lstrip('/'))

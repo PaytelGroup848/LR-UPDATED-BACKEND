@@ -153,6 +153,18 @@ def handle_agent_connect(data):
             )
         except Exception as error:
             logger.warning("Pending RemoteApp sync did not start: %s", error)
+        try:
+            socketio.emit(
+                "enforce_session_lockdown",
+                {
+                    "agent_id": agent_id,
+                    "target_username": data.get("username"),
+                },
+                room=_request_sid(),
+                namespace="/agent",
+            )
+        except Exception as error:
+            logger.warning("Session lockdown command emit failed: %s", error)
         return {
             "success": True,
             "agent_id": agent_id,

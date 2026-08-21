@@ -121,6 +121,18 @@ if (Get-LocalUser -Name $name -ErrorAction SilentlyContinue) { exit 10 }
 $secure = ConvertTo-SecureString $plain -AsPlainText -Force
 New-LocalUser -Name $name -Password $secure -FullName $full -Description $desc -PasswordNeverExpires:$true | Out-Null
 Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $name -ErrorAction SilentlyContinue
+$account = Get-LocalUser -Name $name
+if ($account -and $account.SID) {
+    $sid = $account.SID.Value
+    $profilePath = "C:\Users\$name"
+    $null = & rundll32.exe userenv.dll,CreateProfile $sid $name $profilePath
+    $ntuserWait = Join-Path $profilePath 'NTUSER.DAT'
+    $waited = 0
+    while (-not (Test-Path -LiteralPath $ntuserWait) -and $waited -lt 30) {
+        Start-Sleep -Milliseconds 500
+        $waited++
+    }
+}
 exit 0
 """
     script_path = None

@@ -215,6 +215,18 @@ New-LocalUser -Name $name -Password $secure -FullName $full -Description $desc -
 Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $name -ErrorAction SilentlyContinue
 $account = Get-LocalUser -Name $name
 
+if ($account -and $account.SID) {
+    $sid = $account.SID.Value
+    $profilePath = "C:\Users\$name"
+    $null = & rundll32.exe userenv.dll,CreateProfile $sid $name $profilePath
+    $ntuserWait = Join-Path $profilePath 'NTUSER.DAT'
+    $waited = 0
+    while (-not (Test-Path -LiteralPath $ntuserWait) -and $waited -lt 30) {
+        Start-Sleep -Milliseconds 500
+        $waited++
+    }
+}
+
 # 1. Ensure C:\Users\$name\Desktop exists
 $desktopFolder = "C:\Users\$name\Desktop"
 if (-not (Test-Path -LiteralPath $desktopFolder)) {
@@ -271,6 +283,7 @@ if ($account -and $account.SID) {
     New-ItemProperty -LiteralPath $hkuExplorer -Name 'NoDrives' -PropertyType DWord -Value 67108863 -Force -ErrorAction SilentlyContinue | Out-Null
     New-ItemProperty -LiteralPath $hkuExplorer -Name 'NoNetHood' -PropertyType DWord -Value 1 -Force -ErrorAction SilentlyContinue | Out-Null
     New-ItemProperty -LiteralPath $hkuExplorer -Name 'NoNavPane' -PropertyType DWord -Value 1 -Force -ErrorAction SilentlyContinue | Out-Null
+    New-ItemProperty -LiteralPath $hkuExplorer -Name 'PagesToOpenOnLaunch' -PropertyType DWord -Value 1 -Force -ErrorAction SilentlyContinue | Out-Null
     New-ItemProperty -LiteralPath $hkuExplorer -Name 'NoSetFolders' -PropertyType DWord -Value 1 -Force -ErrorAction SilentlyContinue | Out-Null
     New-ItemProperty -LiteralPath $hkuExplorer -Name 'NoFind' -PropertyType DWord -Value 1 -Force -ErrorAction SilentlyContinue | Out-Null
 }
@@ -284,6 +297,7 @@ if (Test-Path -LiteralPath $ntuser) {
     New-ItemProperty -LiteralPath $tempExplorer -Name 'NoDrives' -PropertyType DWord -Value 67108863 -Force -ErrorAction SilentlyContinue | Out-Null
     New-ItemProperty -LiteralPath $tempExplorer -Name 'NoNetHood' -PropertyType DWord -Value 1 -Force -ErrorAction SilentlyContinue | Out-Null
     New-ItemProperty -LiteralPath $tempExplorer -Name 'NoNavPane' -PropertyType DWord -Value 1 -Force -ErrorAction SilentlyContinue | Out-Null
+    New-ItemProperty -LiteralPath $tempExplorer -Name 'PagesToOpenOnLaunch' -PropertyType DWord -Value 1 -Force -ErrorAction SilentlyContinue | Out-Null
     New-ItemProperty -LiteralPath $tempExplorer -Name 'NoSetFolders' -PropertyType DWord -Value 1 -Force -ErrorAction SilentlyContinue | Out-Null
     New-ItemProperty -LiteralPath $tempExplorer -Name 'NoFind' -PropertyType DWord -Value 1 -Force -ErrorAction SilentlyContinue | Out-Null
     [GC]::Collect()
@@ -299,6 +313,7 @@ if (Test-Path -LiteralPath $defaultNtuser) {
     New-ItemProperty -LiteralPath $tempDefExplorer -Name 'NoDrives' -PropertyType DWord -Value 67108863 -Force -ErrorAction SilentlyContinue | Out-Null
     New-ItemProperty -LiteralPath $tempDefExplorer -Name 'NoNetHood' -PropertyType DWord -Value 1 -Force -ErrorAction SilentlyContinue | Out-Null
     New-ItemProperty -LiteralPath $tempDefExplorer -Name 'NoNavPane' -PropertyType DWord -Value 1 -Force -ErrorAction SilentlyContinue | Out-Null
+    New-ItemProperty -LiteralPath $tempDefExplorer -Name 'PagesToOpenOnLaunch' -PropertyType DWord -Value 1 -Force -ErrorAction SilentlyContinue | Out-Null
     New-ItemProperty -LiteralPath $tempDefExplorer -Name 'NoSetFolders' -PropertyType DWord -Value 1 -Force -ErrorAction SilentlyContinue | Out-Null
     New-ItemProperty -LiteralPath $tempDefExplorer -Name 'NoFind' -PropertyType DWord -Value 1 -Force -ErrorAction SilentlyContinue | Out-Null
     [GC]::Collect()

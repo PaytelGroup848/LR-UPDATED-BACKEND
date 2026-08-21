@@ -41,7 +41,7 @@ try:
     from agent.services.desktop_shortcut import create_desktop_shortcut, delete_desktop_shortcut
     from agent.services.remote_app import sync_remote_app
     from agent.services.windows_account import create_windows_user
-    from agent.services.policy_enforcer import apply_policy
+    from agent.services.policy_enforcer import apply_policy, enforce_session_lockdown
 except ImportError:
     from services.keyboard_control import KeyboardControl
     from services.mouse_control import MouseControl
@@ -50,7 +50,7 @@ except ImportError:
     from services.desktop_shortcut import create_desktop_shortcut, delete_desktop_shortcut
     from services.remote_app import sync_remote_app
     from services.windows_account import create_windows_user
-    from services.policy_enforcer import apply_policy
+    from services.policy_enforcer import apply_policy, enforce_session_lockdown
 
 
 SERVER_URL = (
@@ -200,6 +200,17 @@ def handle_apply_policy(data):
     )
 
 
+@sio.on('enforce_session_lockdown', namespace=NAMESPACE)
+def handle_enforce_session_lockdown(data):
+    data = data or {}
+    if data.get('agent_id') not in (None, agent_id):
+        return {'success': False, 'message': 'Agent mismatch'}
+
+    return enforce_session_lockdown(
+        target_username=data.get('target_username'),
+    )
+
+
 @sio.on('agent_command', namespace=NAMESPACE)
 def handle_agent_command(data):
     data = data or {}
@@ -229,6 +240,9 @@ def handle_agent_command(data):
         'sync_remote_app': lambda: sync_remote_app(payload),
         'apply_policy': lambda: apply_policy(
             policy=payload.get('policy') or {},
+            target_username=payload.get('target_username'),
+        ),
+        'enforce_session_lockdown': lambda: enforce_session_lockdown(
             target_username=payload.get('target_username'),
         ),
     }
